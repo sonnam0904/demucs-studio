@@ -20,9 +20,9 @@ tách nhạc chạy hoàn toàn offline.
 
     Tải lỗi 403, GPU hết VRAM, video bị chặn, tách quá chậm.
 
-- :material-hammer-wrench: **[Build và release](build.md)**
+- :material-hammer-wrench: **[Build từ source](build.md)**
 
-    Dành cho người phát triển: build từ source, quy trình phát hành.
+    Dành cho người phát triển: các lệnh `make` và yêu cầu từng nền tảng.
 
 </div>
 

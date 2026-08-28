@@ -23,20 +23,11 @@ fi
 # one.
 find dist -maxdepth 1 -type f -name '*.dmg' -print -delete 2> /dev/null || true
 
-# wails.json has no CLI override for productVersion, and Wails copies that value
-# into the bundle's Info.plist (CFBundleVersion / CFBundleShortVersionString) —
-# the -X ldflag alone leaves the version macOS shows in Finder stale.
-tmp="$(mktemp)"
-jq --arg v "$version" '.info.productVersion = $v' wails.json > "$tmp"
-mv "$tmp" wails.json
+scripts/stamp-version.sh "$version"
 
 make package-darwin "VERSION=$version"
 
-dmg="dist/demucs-studio-$version-macos-universal.dmg"
-if [ ! -f "$dmg" ]; then
-	echo "release-build-macos: expected $dmg" >&2
-	exit 1
-fi
+scripts/check-artifacts.sh "$version" macos
 
 echo
 echo "Artifacts for $version:"

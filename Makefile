@@ -116,7 +116,18 @@ deb:
 # metadata and the symlinks inside frameworks.
 package-darwin: darwin
 	@mkdir -p $(DIST) $(DIST)/stage-mac
-	ditto build/bin/$(APP).app $(DIST)/stage-mac/$(APP).app
+	# Wails takes the bundle directory name from wails.json, not from -o — that
+	# flag only names the executable inside Contents/MacOS. So the build leaves
+	# build/bin/demucs-studio.app even though $(APP) is DemucsStudio. Resolve
+	# whatever was produced rather than assuming, then stage it under the display
+	# name the .dmg and the docs use. Renaming the directory is safe because
+	# CFBundleExecutable names the inner binary, which -o already set to $(APP).
+	@bundle=$$(ls -d build/bin/*.app 2>/dev/null | head -1); \
+	if [ -z "$$bundle" ]; then \
+		echo "package-darwin: không có .app nào trong build/bin"; exit 1; \
+	fi; \
+	echo "ditto $$bundle $(DIST)/stage-mac/$(APP).app"; \
+	ditto "$$bundle" "$(DIST)/stage-mac/$(APP).app"
 	cp packaging/macos/README.md $(DIST)/stage-mac/
 	# Apple Silicon refuses to launch an arm64 bundle carrying no signature at
 	# all. An ad-hoc signature needs no certificate and is enough to start the

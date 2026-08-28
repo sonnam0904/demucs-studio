@@ -50,7 +50,7 @@ jobs:
     needs: version
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-build
 
@@ -62,7 +62,7 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: scripts/release-build.sh "$VERSION"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: demucs-studio-${{ needs.version.outputs.version }}
           path: dist/*
@@ -73,7 +73,7 @@ jobs:
     needs: version
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-build
 
@@ -85,7 +85,7 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: scripts/release-build-macos.sh "$VERSION"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: demucs-studio-${{ needs.version.outputs.version }}-macos
           path: dist/*.dmg

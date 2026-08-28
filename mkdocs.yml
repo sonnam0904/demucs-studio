@@ -50,7 +50,7 @@ nav:
       - Hướng dẫn sử dụng: usage.md
       - Xử lý sự cố: troubleshooting.md
   - Dành cho người phát triển:
-      - Build và release: build.md
+      - Build từ source: build.md
       - Ghi chú kỹ thuật: engineering.md
 
 markdown_extensions:

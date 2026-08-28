@@ -209,7 +209,7 @@ chậm: **[Xử lý sự cố](https://sonnam0904.github.io/demucs-studio/troubl
 | [Cài đặt](docs/installation.md)         | Cài app, công cụ tải nhạc, engine Python, thư mục dữ liệu, gỡ cài đặt |
 | [Hướng dẫn sử dụng](docs/usage.md)      | Quy trình bốn bước, chọn model, tinh chỉnh, cookies                   |
 | [Xử lý sự cố](docs/troubleshooting.md)  | Các lỗi thường gặp và cách sửa                                        |
-| [Build và release](docs/build.md)       | Build từng nền tảng, cross-compile, quy trình release                 |
+| [Build từ source](docs/build.md)        | Các lệnh `make` và yêu cầu build của từng nền tảng                    |
 | [Ghi chú kỹ thuật](docs/engineering.md) | Cấu trúc code và những chỗ dễ sai                                     |
 
 
