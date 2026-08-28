@@ -73,19 +73,6 @@ RoFormer nhanh hơn nhiều lần; chỉ có CPU thì `htdemucs_ft` thực dụn
 
 Danh sách đầy đủ ở [Hướng dẫn sử dụng](usage.md#chon-model).
 
-## Trạng thái
-
-Đã kiểm chứng end-to-end trên Linux (Pop!_OS 24.04): tải YouTube → WAV, tách
-bằng `htdemucs_ft` và Mel-Band RoFormer, tải model, làm mới danh sách model.
-Unit test bao phủ phần dò tìm phụ thuộc, parser tiến độ, xác thực checksum, và
-các trường hợp biên về đường dẫn.
-
-!!! warning "Bản Windows chưa được chạy thật"
-
-    Tới giờ bản Windows mới chỉ được compile và unit test, chưa chạy trên một máy
-    Windows thật. Ba chỗ nên thử trước: cài engine Python (`py -3` + venv + torch
-    CUDA), nút Huỷ (`taskkill`), và giải nén ffmpeg từ zip.
-
 ## License
 
 MIT. Demucs (MIT, Meta) và các model RoFormer giữ license riêng của tác giả —

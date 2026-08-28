@@ -1,6 +1,8 @@
 <a id="readme-top"></a>
 
-<img src="build/appicon.png" alt="Demucs Studio" width="96" height="96">
+<p align="center">
+  <img src="build/appicon.png" alt="Demucs Studio" width="96" height="96">
+</p>
 
 # Demucs Studio
 
