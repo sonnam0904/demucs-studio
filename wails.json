@@ -13,7 +13,7 @@
   "info": {
     "companyName": "DemucsStudio",
     "productName": "DemucsStudio",
-    "productVersion": "1.0.0",
+    "productVersion": "1.1.0",
     "copyright": "MIT",
     "comments": "Tải audio từ YouTube và tách vocal bằng Demucs / BS-RoFormer"
   }

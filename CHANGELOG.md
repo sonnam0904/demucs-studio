@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/sonnam0904/demucs-studio/compare/v1.0.0...v1.1.0) (2026-08-28)
+
+
+### Features
+
+* Implement self-update functionality for the application ([bf2c0d3](https://github.com/sonnam0904/demucs-studio/commit/bf2c0d36ddc4693cffea31587c9e1724767b5fbd))
+
 # 1.0.0 (2026-08-28)
 
 
