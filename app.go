@@ -45,10 +45,6 @@ type App struct {
 	jobMu     sync.Mutex
 	jobCancel context.CancelFunc
 	jobPhase  string
-
-	// The window starts hidden and is revealed by whichever of the two paths in
-	// reveal() gets there first.
-	showOnce sync.Once
 }
 
 func NewApp(m *mediaServer) *App {
@@ -107,34 +103,6 @@ func (a *App) startup(ctx context.Context) {
 		wruntime.EventsEmit(ctx, "app:deps", report)
 	}()
 
-	// A window that never appears is a worse failure than a brief flash of
-	// unstyled HTML, so do not rely on OnDomReady being reached.
-	go func() {
-		select {
-		case <-time.After(5 * time.Second):
-			a.reveal(ctx)
-		case <-ctx.Done():
-		}
-	}()
-}
-
-// domReady reveals the window once the DOM has parsed.
-//
-// The window is created hidden (StartHidden in main.go). Wails would otherwise
-// map it before the webview has fetched anything: the asset server answers
-// wails:// requests asynchronously, so the first paint is bare HTML and the
-// stylesheet lands visibly later. That flash is seconds long on the software
-// renderer WebKitGTK falls back to once the DMA-BUF path is disabled for the
-// NVIDIA driver — see tuneWebKit.
-//
-// DOMContentLoaded is the right moment: a render-blocking <link rel=stylesheet>
-// in <head> has already been applied by the time it fires.
-func (a *App) domReady(ctx context.Context) {
-	a.reveal(ctx)
-}
-
-func (a *App) reveal(ctx context.Context) {
-	a.showOnce.Do(func() { wruntime.WindowShow(ctx) })
 }
 
 // --- payloads ---------------------------------------------------------------

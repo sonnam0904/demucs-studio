@@ -37,18 +37,25 @@ func main() {
 	app := NewApp(media)
 
 	err = wails.Run(&options.App{
-		Title:            "Demucs Studio",
-		Width:            1180,
-		Height:           820,
-		MinWidth:         920,
-		MinHeight:        640,
-		AssetServer:      &assetserver.Options{Assets: assets},
-		BackgroundColour: &options.RGBA{R: 12, G: 14, B: 20, A: 1},
-		// Hidden until the stylesheet has been applied; App.domReady shows it.
-		StartHidden: true,
-		OnStartup:   app.startup,
-		OnDomReady:  app.domReady,
-		Bind:        []any{app},
+		Title:       "Demucs Studio",
+		Width:       1180,
+		Height:      820,
+		MinWidth:    920,
+		MinHeight:   640,
+		AssetServer: &assetserver.Options{Assets: assets},
+		// This colour is the stylesheet's --bg, so the window paints as the
+		// app's own background from the first frame and the webview fills in
+		// over it. That is what makes StartHidden unnecessary.
+		//
+		// StartHidden was used here once, with OnDomReady revealing the window.
+		// It cost us a window that never appeared at all: Wails' Linux backend
+		// hides the window from a g_idle_add callback (window.go:321 in v2.13),
+		// and WindowShow queues onto the same idle list, so whichever call is
+		// queued last wins. Lose that race and the app runs headless forever —
+		// process alive, window created, Map State: IsUnMapped. A brief flash
+		// of the background colour is a far better failure mode.
+		OnStartup: app.startup,
+		Bind:      []any{app},
 		Linux: &linux.Options{
 			Icon:                icon,
 			WindowIsTranslucent: false,
