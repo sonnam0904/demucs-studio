@@ -161,6 +161,28 @@ textarea {
   background: rgba(240, 176, 60, 0.1);
 }
 
+/* The version badge is a button so it can focus the update banner, but it has
+   to keep looking like the badge next to it — a <button> resets neither font
+   nor line-height. */
+.badge-btn {
+  font-family: inherit;
+  line-height: inherit;
+  cursor: pointer;
+}
+
+.badge-btn:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+
+/* Reuses the accent rather than is-warn: a new version is an offer, not a
+   problem the user has to fix. */
+.badge-btn.is-update {
+  border-color: rgba(91, 140, 255, 0.4);
+  color: var(--accent-hover);
+  background: var(--accent-soft);
+}
+
 /* ------------------------------- banner ---------------------------------- */
 
 .banner {
@@ -194,6 +216,24 @@ textarea {
 .banner button {
   margin-left: auto;
   flex: 0 0 auto;
+}
+
+/* margin-left:auto above pushes the lone button of the deps banner to the right
+   edge. The update banner has two, and leaving both with an auto margin would
+   split the free space between them instead of keeping them together. */
+.banner button + button {
+  margin-left: 8px;
+}
+
+/* Accent rather than the warning amber the deps banner uses: an available
+   update is an offer, not something broken. */
+.banner.is-update {
+  background: var(--accent-soft);
+  border-color: rgba(91, 140, 255, 0.32);
+}
+
+.banner.is-update .banner-text strong {
+  color: var(--accent-hover);
 }
 
 /* ------------------------------- content --------------------------------- */

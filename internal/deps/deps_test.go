@@ -1,6 +1,9 @@
 package deps
 
 import (
+	"archive/zip"
+	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -359,5 +362,108 @@ func TestJSRuntimeNamesAreWhatYtDlpAccepts(t *testing.T) {
 	// deno first: it is the only one yt-dlp auto-enables.
 	if jsRuntimeNames[0] != "deno" {
 		t.Errorf("expected deno first, got %q", jsRuntimeNames[0])
+	}
+}
+
+func TestDenoAssetMatchPlatform(t *testing.T) {
+	// Checked for every target rather than just the host, so a Linux CI run
+	// still catches a broken macOS or Windows mapping.
+	for _, tc := range []struct {
+		goos, goarch, want string
+	}{
+		{"linux", "amd64", "deno-x86_64-unknown-linux-gnu.zip"},
+		{"linux", "arm64", "deno-aarch64-unknown-linux-gnu.zip"},
+		{"darwin", "amd64", "deno-x86_64-apple-darwin.zip"},
+		{"darwin", "arm64", "deno-aarch64-apple-darwin.zip"},
+		{"windows", "amd64", "deno-x86_64-pc-windows-msvc.zip"},
+		{"windows", "arm64", "deno-aarch64-pc-windows-msvc.zip"},
+	} {
+		target := tc.goos + "/" + tc.goarch
+		got, err := denoAssetFor(tc.goos, tc.goarch)
+		if err != nil {
+			t.Errorf("%s: %v", target, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: asset = %q, want %q", target, got, tc.want)
+		}
+		// The release carries denort-* and libdenort-* under the same triples;
+		// those are the embeddable runtime, not the CLI yt-dlp drives.
+		if !strings.HasPrefix(got, "deno-") {
+			t.Errorf("%s: asset %q must be the deno- CLI, not a denort build", target, got)
+		}
+	}
+
+	if _, err := denoAssetFor("plan9", "mips"); err == nil {
+		t.Error("expected an error for an unsupported platform")
+	}
+}
+
+// unzip used to hardcode ffmpeg/ffprobe, so pointing it at any other archive
+// quietly produced an empty directory and the caller failed later with a
+// confusing "not found". Keep the allow-list honest, including the flattening
+// that makes zip-slip impossible.
+func TestUnzipExtractsOnlyWantedNames(t *testing.T) {
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "a.zip")
+
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	for _, name := range []string{
+		"deno",
+		"LICENSE",
+		"nested/deep/ffmpeg",
+		"../../escape",
+	} {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	dest := filepath.Join(dir, "out")
+	if err := paths.EnsureDir(dest); err != nil {
+		t.Fatal(err)
+	}
+	if err := unzip(archive, dest, "deno", "ffmpeg", "escape"); err != nil {
+		t.Fatalf("unzip: %v", err)
+	}
+
+	entries, err := os.ReadDir(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	slices.Sort(got)
+	// "LICENSE" was not asked for. "nested/deep/ffmpeg" and "../../escape" both
+	// land on their base name inside dest — the traversal never escapes.
+	want := []string{"deno", "escape", "ffmpeg"}
+	if !slices.Equal(got, want) {
+		t.Errorf("extracted %v, want %v", got, want)
+	}
+
+	// Nothing wanted means nothing written, not everything written.
+	empty := filepath.Join(dir, "empty")
+	if err := paths.EnsureDir(empty); err != nil {
+		t.Fatal(err)
+	}
+	if err := unzip(archive, empty); err != nil {
+		t.Fatalf("unzip with no names: %v", err)
+	}
+	if entries, err := os.ReadDir(empty); err != nil || len(entries) != 0 {
+		t.Errorf("expected nothing extracted, got %d entries (err %v)", len(entries), err)
 	}
 }

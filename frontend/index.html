@@ -23,9 +23,19 @@
           <button class="tab" data-tab="settings">Cấu hình</button>
         </nav>
         <div class="topbar-right">
+          <button class="badge badge-btn" id="version-badge" title="Phiên bản đang chạy">…</button>
           <span class="badge" id="gpu-badge" title="Thiết bị tính toán">…</span>
         </div>
       </header>
+
+      <div id="update-banner" class="banner is-update hidden">
+        <div class="banner-text">
+          <strong id="update-banner-title">Đã có bản mới</strong>
+          <span id="update-banner-detail"></span>
+        </div>
+        <button class="btn" id="update-banner-dismiss">Để sau</button>
+        <button class="btn btn-primary" id="update-banner-apply">Cập nhật</button>
+      </div>
 
       <div id="dep-banner" class="banner hidden">
         <div class="banner-text">

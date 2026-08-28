@@ -31,6 +31,12 @@ const (
 	ytDlpChecksums  = ytDlpRelease + "SHA2-256SUMS"
 	ffmpegChecksums = ffmpegRelease + "checksums.sha256"
 
+	// deno publishes one zip per platform under a stable name, plus a
+	// sha256sum-format file beside each asset. That format matches the single
+	// manifest the other two projects publish, so publishedChecksum reads it
+	// unchanged — only the URL differs.
+	denoRelease = "https://github.com/denoland/deno/releases/latest/download/"
+
 	// yt-dlp's FFmpeg-Builds publishes no macOS asset at all, so darwin pulls
 	// the static builds from eugeneware/ffmpeg-static instead. That project
 	// uploads the executables bare rather than inside an archive, and ships no
@@ -69,6 +75,94 @@ func ytDlpAsset() (asset, dest string, err error) {
 		return "yt-dlp_macos", "yt-dlp", nil
 	}
 	return "", "", fmt.Errorf("không có bản yt-dlp dựng sẵn cho %s/%s", runtime.GOOS, runtime.GOARCH)
+}
+
+// denoAsset picks the deno build for this platform.
+func denoAsset() (string, error) { return denoAssetFor(runtime.GOOS, runtime.GOARCH) }
+
+// denoAssetFor is the platform-parameterised half of denoAsset, so tests can
+// check every target's mapping from whichever host they run on.
+func denoAssetFor(goos, goarch string) (string, error) {
+	var triple string
+	switch goos + "/" + goarch {
+	case "linux/amd64":
+		triple = "x86_64-unknown-linux-gnu"
+	case "linux/arm64":
+		triple = "aarch64-unknown-linux-gnu"
+	case "darwin/amd64":
+		triple = "x86_64-apple-darwin"
+	case "darwin/arm64":
+		triple = "aarch64-apple-darwin"
+	case "windows/amd64":
+		triple = "x86_64-pc-windows-msvc"
+	case "windows/arm64":
+		triple = "aarch64-pc-windows-msvc"
+	default:
+		return "", fmt.Errorf("không có bản deno dựng sẵn cho %s/%s", goos, goarch)
+	}
+	// The same release also carries denort-* and libdenort-* for every triple,
+	// which are the embeddable runtime rather than the CLI. The prefix has to be
+	// exact or the download silently yields something that cannot run scripts.
+	return "deno-" + triple + ".zip", nil
+}
+
+// InstallDeno downloads the deno runtime into AppDir/bin.
+//
+// yt-dlp needs a JavaScript runtime to solve YouTube's challenges, and accepts
+// deno, node or bun. deno is the one worth installing unattended: it is the
+// only one that ships as a single self-contained executable, so installing it
+// is a download and a copy rather than a package manager or a directory tree.
+// It is also the one yt-dlp auto-enables.
+func InstallDeno(ctx context.Context, rep Reporter) error {
+	asset, err := denoAsset()
+	if err != nil {
+		return err
+	}
+	if err := paths.EnsureDir(paths.BinDir()); err != nil {
+		return err
+	}
+	work, err := os.MkdirTemp("", "deno-dl-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(work)
+
+	url := denoRelease + asset
+	local := filepath.Join(work, asset)
+	rep.Logf(LevelInfo, "Tải deno: %s", url)
+	sum := publishedChecksum(ctx, url+".sha256sum", asset, rep)
+	err = netfetch.Get(ctx, url, local, sum, func(done, total int64) {
+		rep.Step("install", fraction(done, total)*0.9, "Đang tải deno", byteRange(done, total))
+	})
+	if err != nil {
+		return err
+	}
+
+	rep.Step("install", 0.92, "Đang giải nén deno", "")
+	extracted := filepath.Join(work, "x")
+	if err := paths.EnsureDir(extracted); err != nil {
+		return err
+	}
+	name := paths.Exe("deno")
+	if err := unzip(local, extracted, name); err != nil {
+		return err
+	}
+
+	// unzip flattens, so a match always lands directly in extracted regardless
+	// of where it sat in the archive.
+	src := filepath.Join(extracted, name)
+	if !isExecutable(src) {
+		return errors.New("không tìm thấy deno trong gói vừa tải")
+	}
+
+	dest := filepath.Join(paths.BinDir(), name)
+	if err := copyFile(src, dest, 0o755); err != nil {
+		return err
+	}
+	adhocSign(ctx, dest, rep)
+	rep.Step("install", 1, "Hoàn tất", "")
+	rep.Logf(LevelInfo, "deno đã cài vào %s", dest)
+	return nil
 }
 
 // ffmpegDownload is one file InstallFFmpeg has to fetch.
@@ -222,7 +316,7 @@ func installFFmpegAsset(ctx context.Context, dl ffmpegDownload, local, work stri
 		return 0, err
 	}
 	if strings.HasSuffix(dl.name, ".zip") {
-		if err := unzip(local, extracted); err != nil {
+		if err := unzip(local, extracted, paths.Exe("ffmpeg"), paths.Exe("ffprobe")); err != nil {
 			return 0, err
 		}
 	} else if err := untarXZ(ctx, local, extracted); err != nil {
@@ -422,7 +516,22 @@ func untarXZ(ctx context.Context, archive, dest string) error {
 	return nil
 }
 
-func unzip(archive, dest string) error {
+// unzip extracts the entries whose base name is in wanted, flattening the
+// archive's directory layout into dest.
+//
+// Flattening does double duty: the caller does not have to know where in the
+// archive an executable lives, and no entry name ever reaches the filesystem —
+// only its base name, matched against wanted — which is what makes zip-slip on
+// a crafted path impossible.
+//
+// wanted is a parameter rather than a hardcoded pair: it used to be fixed to
+// ffmpeg/ffprobe, which silently produced an empty directory for any other
+// archive.
+func unzip(archive, dest string, wanted ...string) error {
+	want := make(map[string]bool, len(wanted))
+	for _, n := range wanted {
+		want[n] = true
+	}
 	zr, err := zip.OpenReader(archive)
 	if err != nil {
 		return err
@@ -432,10 +541,8 @@ func unzip(archive, dest string) error {
 		if f.FileInfo().IsDir() {
 			continue
 		}
-		// Flatten: we only care about the executables, and this sidesteps
-		// zip-slip on crafted paths.
 		name := filepath.Base(f.Name)
-		if name != paths.Exe("ffmpeg") && name != paths.Exe("ffprobe") {
+		if !want[name] {
 			continue
 		}
 		rc, err := f.Open()

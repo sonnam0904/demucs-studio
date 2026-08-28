@@ -125,9 +125,9 @@ Tab **Phụ thuộc** → dòng nào thiếu sẽ có nút **Cài tự động**
 thức từ GitHub và đối chiếu checksum do chính dự án đó công bố.
 
 > [!TIP]
-> Dòng **JS runtime** báo thiếu thì nên cài `deno`, `node` hoặc `bun`. YouTube bắt
-> giải một thử thách JavaScript để lấy link nhạc; không có runtime thì một số video
-> sẽ lỗi. `deno` nhẹ nhất.
+> Đừng bỏ qua dòng **JS runtime**. YouTube bắt giải một thử thách JavaScript để
+> lấy link nhạc; không có runtime thì một số video sẽ lỗi 403. Nút *Cài tự động*
+> ở dòng đó tải `deno` về — hoặc dùng `node`/`bun` sẵn có, app tự dò ra.
 
 
 

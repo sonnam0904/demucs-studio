@@ -118,6 +118,21 @@ export interface Progress {
   detail: string;
 }
 
+export interface UpdateStatus {
+  current: string;
+  latest: string;
+  available: boolean;
+  notes: string;
+  url: string;
+  // False when this install cannot overwrite itself — a .deb/.rpm, or a
+  // directory the user cannot write. `reason` says which, ready to display.
+  canApply: boolean;
+  reason: string;
+  assetUrl: string;
+  assetName: string;
+  assetSize: number;
+}
+
 export interface Bootstrap {
   settings: Settings;
   deps: DepsReport;

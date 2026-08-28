@@ -23,6 +23,7 @@ import (
 	"demucs-studio/internal/engine/demucs"
 	"demucs-studio/internal/engine/roformer"
 	"demucs-studio/internal/paths"
+	"demucs-studio/internal/selfupdate"
 	"demucs-studio/internal/settings"
 	"demucs-studio/internal/ytdl"
 )
@@ -82,6 +83,10 @@ func (a *App) startup(ctx context.Context) {
 	if err := a.media.Start(); err != nil {
 		a.bus.Logf(bus.LevelError, "Không phát được audio trong app: %v", err)
 	}
+
+	// Startup is the first moment the previous version is no longer the running
+	// image, so it is the only safe time to delete what an update left behind.
+	go selfupdate.CleanupOld()
 
 	// Warm the dependency and GPU probes off the UI thread; importing torch
 	// takes several seconds and must not block the first paint.
@@ -227,6 +232,8 @@ func (a *App) InstallTool(id string) error {
 			err = deps.InstallYtDlp(ctx, rep)
 		case deps.ToolFFmpeg:
 			err = deps.InstallFFmpeg(ctx, rep)
+		case deps.ToolJSRuntime:
+			err = deps.InstallDeno(ctx, rep)
 		default:
 			err = fmt.Errorf("không hỗ trợ tự cài %q", id)
 		}
@@ -247,6 +254,54 @@ func (a *App) UpdateYtDlp() error {
 	return a.runJob("install", func(ctx context.Context) error {
 		return deps.UpdateYtDlp(ctx, a.resolver, a.reporter())
 	})
+}
+
+// --- self-update ------------------------------------------------------------
+
+// CheckUpdate asks GitHub whether a newer release exists. The UI calls it once
+// at startup and again from the "kiểm tra lại" button.
+func (a *App) CheckUpdate() (selfupdate.Status, error) {
+	return selfupdate.Check(a.context(), appVersion)
+}
+
+// ApplyUpdate downloads the new release, swaps it over this install and
+// restarts into it.
+//
+// The restart is deliberately the last thing that happens and is not undoable:
+// once Relaunch succeeds a second copy is starting up, so this process has to
+// go. If the swap itself fails, Apply has already put the old install back and
+// the error surfaces in the UI with nothing changed.
+func (a *App) ApplyUpdate() error {
+	st, err := selfupdate.Check(a.context(), appVersion)
+	if err != nil {
+		return err
+	}
+	if !st.Available {
+		return errors.New("đang dùng bản mới nhất")
+	}
+	if !st.CanApply {
+		return errors.New(st.Reason)
+	}
+
+	if err := a.runJob("update", func(ctx context.Context) error {
+		return selfupdate.Apply(ctx, st, a.reporter())
+	}); err != nil {
+		return err
+	}
+
+	if err := selfupdate.Relaunch(); err != nil {
+		// The new version is installed and will be picked up next time the user
+		// opens the app themselves, so this is a warning rather than a failure.
+		a.bus.Logf(bus.LevelWarn, "Đã cài bản %s nhưng không tự mở lại được (%v). Hãy đóng và mở lại ứng dụng.", st.Latest, err)
+		return fmt.Errorf("đã cài bản %s, nhưng cần mở lại ứng dụng thủ công", st.Latest)
+	}
+	// Give the replacement a moment to get going before this window disappears,
+	// so the user never sees an empty desktop.
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		wruntime.Quit(a.context())
+	}()
+	return nil
 }
 
 // SuggestedAccel tells the UI which torch flavour to preselect: reuse an

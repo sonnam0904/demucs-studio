@@ -184,9 +184,9 @@ func (r *Resolver) JSRuntime(ctx context.Context) Tool {
 		return t
 	}
 	t := Tool{
-		ID: ToolJSRuntime, Label: "JS runtime", Required: false, CanInstall: false,
+		ID: ToolJSRuntime, Label: "JS runtime", Required: false, CanInstall: true,
 		Hint: "yt-dlp cần deno, node hoặc bun để giải thử thách JavaScript của YouTube. " +
-			"Thiếu nó, một số video sẽ lỗi 403.",
+			"Thiếu nó, một số video sẽ lỗi 403. Bấm Cài tự động để app tải deno về.",
 	}
 	for _, name := range jsRuntimeNames {
 		path, source := r.locate("", name)

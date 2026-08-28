@@ -274,6 +274,41 @@ export namespace main {
 
 }
 
+export namespace selfupdate {
+	
+	export class Status {
+	    current: string;
+	    latest: string;
+	    available: boolean;
+	    notes: string;
+	    url: string;
+	    canApply: boolean;
+	    reason: string;
+	    assetUrl: string;
+	    assetName: string;
+	    assetSize: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Status(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.current = source["current"];
+	        this.latest = source["latest"];
+	        this.available = source["available"];
+	        this.notes = source["notes"];
+	        this.url = source["url"];
+	        this.canApply = source["canApply"];
+	        this.reason = source["reason"];
+	        this.assetUrl = source["assetUrl"];
+	        this.assetName = source["assetName"];
+	        this.assetSize = source["assetSize"];
+	    }
+	}
+
+}
+
 export namespace settings {
 	
 	export class Settings {

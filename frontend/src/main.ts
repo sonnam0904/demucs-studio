@@ -1,6 +1,6 @@
 import "./style.css";
 import * as App from "../wailsjs/go/main/App";
-import { EventsOn } from "../wailsjs/runtime/runtime";
+import { BrowserOpenURL, EventsOn } from "../wailsjs/runtime/runtime";
 import type {
   Bootstrap,
   DepsReport,
@@ -10,6 +10,7 @@ import type {
   SeparateResult,
   Settings,
   Track,
+  UpdateStatus,
 } from "./types";
 
 // The generated bindings are untyped JS; funnel every call through here so the
@@ -79,6 +80,84 @@ const state: State = {
   inputPath: "",
   busy: false,
 };
+
+// ------------------------------------------------------------------ update
+
+// Kept module-level rather than in `state`: nothing else reads it, and the
+// banner needs the last status after the user dismisses and reopens it.
+let updateStatus: UpdateStatus | null = null;
+
+function renderUpdate(st: UpdateStatus) {
+  updateStatus = st;
+
+  const badge = $<HTMLButtonElement>("version-badge");
+  badge.textContent = st.available ? `${st.current} → ${st.latest}` : st.current;
+  badge.className = st.available ? "badge badge-btn is-update" : "badge badge-btn";
+  badge.title = st.available
+    ? `Đã có bản ${st.latest}`
+    : st.reason || `Đang dùng bản mới nhất (${st.current})`;
+
+  const banner = $("update-banner");
+  banner.classList.toggle("hidden", !st.available);
+  if (!st.available) return;
+
+  $("update-banner-title").textContent = `Đã có bản ${st.latest}`;
+  // When the update cannot be applied in place, `reason` explains why and the
+  // button becomes a link to the release page instead of a broken action.
+  $("update-banner-detail").textContent = st.canApply
+    ? `Đang dùng ${st.current}. Tải ${st.assetName} (${bytes(st.assetSize)}) rồi khởi động lại.`
+    : st.reason;
+  $("update-banner-apply").textContent = st.canApply ? "Cập nhật" : "Mở trang tải";
+}
+
+async function checkForUpdate(quiet: boolean) {
+  try {
+    const st = (await api.CheckUpdate()) as UpdateStatus;
+    renderUpdate(st);
+    if (!quiet && !st.available) {
+      toast(st.reason || `Đang dùng bản mới nhất (${st.current}).`, "good");
+    }
+  } catch (e) {
+    // At startup a failed check is not worth a toast: no network is a normal
+    // state for an app that works entirely offline once set up.
+    if (quiet) return;
+    toast(`Không kiểm tra được cập nhật: ${errText(e)}`, "error");
+  }
+}
+
+async function applyUpdate() {
+  if (!updateStatus?.available) return;
+  if (!updateStatus.canApply) {
+    // Not api.OpenPath: that one stats the target first, so it rejects URLs.
+    BrowserOpenURL(updateStatus.url);
+    return;
+  }
+  const btn = $<HTMLButtonElement>("update-banner-apply");
+  btn.disabled = true;
+  try {
+    await api.ApplyUpdate();
+    // On success the backend is already starting the new copy and closing this
+    // one, so there is nothing left to render.
+    toast("Đã cập nhật, đang khởi động lại…", "good");
+  } catch (e) {
+    toast(errText(e), "error");
+    btn.disabled = false;
+  }
+}
+
+function wireUpdate() {
+  $("update-banner-apply").onclick = () => void applyUpdate();
+  $("update-banner-dismiss").onclick = () => $("update-banner").classList.add("hidden");
+  // Clicking the badge brings a dismissed banner back, and doubles as a manual
+  // re-check when there is nothing to show.
+  $("version-badge").onclick = () => {
+    if (updateStatus?.available) {
+      $("update-banner").classList.remove("hidden");
+      return;
+    }
+    void checkForUpdate(false);
+  };
+}
 
 // ------------------------------------------------------------------ layout
 
@@ -234,16 +313,11 @@ function renderDeps(report: DepsReport) {
     if (!tool.found && tool.canInstall) {
       const btn = document.createElement("button");
       btn.className = "btn btn-primary";
-      if (tool.id === "ytdlp" || tool.id === "ffmpeg") {
-        btn.textContent = "Cài tự động";
-        btn.onclick = () => installTool(tool.id);
-      } else {
-        btn.textContent = "Xem cách cài";
-        btn.onclick = () => {
-          (document.querySelector('[data-tab="deps"]') as HTMLElement).click();
-          toast("Dùng khối “Cài engine Python” bên dưới.", "info");
-        };
-      }
+      btn.textContent = "Cài tự động";
+      btn.onclick = () =>
+        void (ENGINE_TOOLS.has(tool.id)
+          ? installEngine(tool.id, tool.label)
+          : installTool(tool.id, tool.label));
       row.appendChild(btn);
     }
     list.appendChild(row);
@@ -259,11 +333,31 @@ function renderDeps(report: DepsReport) {
   refreshSeparateButton();
 }
 
-async function installTool(id: string) {
+// Engines are pip installs into the app's own venv, not standalone downloads,
+// so their row button goes through InstallEngines instead of InstallTool —
+// reusing the PyTorch and CUDA choices from the block further down the tab.
+const ENGINE_TOOLS = new Set(["demucs", "audioSeparator"]);
+
+async function installTool(id: string, label: string) {
   try {
     await api.InstallTool(id);
-    toast(`Đã cài ${id}.`, "good");
+    toast(`Đã cài ${label}.`, "good");
     await reloadDeps();
+  } catch (e) {
+    toast(errText(e), "error");
+  }
+}
+
+async function installEngine(id: string, label: string) {
+  try {
+    await api.InstallEngines({
+      engines: [id],
+      accel: $<HTMLSelectElement>("accel-select").value,
+      cudaTag: $<HTMLSelectElement>("cuda-tag").value,
+    });
+    toast(`Đã cài ${label}.`, "good");
+    await reloadDeps(true);
+    await reloadModels();
   } catch (e) {
     toast(errText(e), "error");
   }
@@ -737,6 +831,8 @@ function wireActions() {
     );
     for (const tool of missing) {
       try {
+        // Only required tools reach here, and every one of those is a direct
+        // download — no engine, so no InstallEngines branch needed.
         await api.InstallTool(tool.id);
       } catch (e) {
         toast(errText(e), "error");
@@ -822,6 +918,7 @@ function wireActions() {
 async function boot() {
   initTabs();
   wireActions();
+  wireUpdate();
   renumberSteps();
 
   EventsOn("app:log", (line: LogLine) => appendLog(line));
@@ -835,6 +932,9 @@ async function boot() {
     renderModels(boot.models);
     renderDeps(boot.deps);
     renderAbout(boot);
+    // Seeded here rather than waiting for checkForUpdate, so the badge shows
+    // the running version even when the check below never answers.
+    $("version-badge").textContent = boot.appVersion;
     boot.log.forEach(appendLog);
     $("brand-sub").textContent = `YouTube → ${boot.settings.audioFormat.toUpperCase()} → tách vocal`;
     wireSettingsAutosave();
@@ -844,6 +944,11 @@ async function boot() {
   } catch (e) {
     toast(`Không khởi tạo được: ${errText(e)}`, "error");
   }
+
+  // Deliberately outside the try and not awaited: the update check reaches the
+  // network, and neither a slow GitHub nor a missing one should hold up — or
+  // fail — the rest of the startup.
+  void checkForUpdate(true);
 }
 
 void boot();

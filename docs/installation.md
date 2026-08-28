@@ -75,24 +75,27 @@ Tải bản dựng mới nhất ở trang
 
 ## 2. Cài công cụ tải nhạc
 
-Mở tab **Phụ thuộc** → bấm *Cài tự động* ở hai dòng `yt-dlp` và `ffmpeg`.
-Mất vài chục giây.
+Mở tab **Phụ thuộc**. Dòng nào chưa có sẽ hiện nút *Cài tự động* — bấm lần lượt
+`yt-dlp`, `ffmpeg` và **JS runtime**. Mất vài chục giây mỗi cái.
 
 | Công cụ | Bắt buộc | App tự cài được? |
 | --- | --- | --- |
 | `yt-dlp` | ✅ để tải | ✅ tải bản standalone từ GitHub release |
 | `ffmpeg` | ✅ để chuyển sang WAV | ✅ tải bản static, kèm `ffprobe` |
-| JS runtime (`deno`/`node`/`bun`) | nên có | ❌ cài sẵn ở hệ thống |
+| JS runtime (`deno`/`node`/`bun`) | nên có | ✅ tải `deno` bản standalone từ GitHub release |
 | Python 3.10+ | chỉ khi muốn tách nhạc | ❌ cài sẵn ở hệ thống |
 | `demucs` | cho engine Demucs | ✅ pip vào venv riêng của app |
 | `audio-separator` | cho engine RoFormer | ✅ pip vào venv riêng của app |
 
-!!! tip "Nên cài thêm một JS runtime"
+!!! tip "Đừng bỏ qua dòng JS runtime"
 
     YouTube bắt giải một thử thách JavaScript để lấy URL media. Thiếu runtime thì
-    yt-dlp mất một số format và coi đường extraction đó là deprecated. App tự dò
-    `deno`/`node`/`bun` rồi truyền sang yt-dlp giúp bạn — nhưng phải có ít nhất
-    một cái. `deno` nhẹ nhất.
+    yt-dlp mất một số format và một số video sẽ lỗi 403.
+
+    App dùng được `deno`, `node` hoặc `bun` — nếu máy đã có sẵn cái nào thì nó tự
+    dò ra và không hiện nút. Nút *Cài tự động* tải **deno**, vì đó là runtime duy
+    nhất phân phối dưới dạng một file thực thi độc lập, và cũng là cái yt-dlp tự
+    bật.
 
 Xong bước này là **tải nhạc từ YouTube về máy** được rồi.
 
@@ -213,6 +216,36 @@ Bên trong: `settings.json`, `bin/`, `models/demucs/`, `models/roformer/`,
 
 Xoá thư mục này là app trở về trạng thái mới cài — phải tải lại model và cài lại
 engine. Trong app có nút **Mở thư mục dữ liệu** ở tab **Cấu hình**.
+
+## Cập nhật { #cap-nhat }
+
+Mỗi lần mở, app tự hỏi GitHub xem có bản mới không. Phiên bản đang chạy luôn hiện
+ở **badge góc trên bên phải**, cạnh badge GPU. Có bản mới thì badge đổi màu thành
+`1.0.0 → 1.1.0` và một banner hiện ra ngay dưới thanh tiêu đề.
+
+Bấm **Cập nhật** là app tải gói mới, thay thế bản cũ rồi tự khởi động lại. Không
+mất cấu hình hay model: mọi thứ đó nằm trong [thư mục dữ liệu](#thu-muc-du-lieu),
+tách khỏi thư mục cài.
+
+Bấm **Để sau** để tắt banner; badge vẫn còn, bấm vào là banner hiện lại.
+
+!!! info "Bản `.deb`/`.rpm` phải cập nhật thủ công"
+
+    Với hai gói này, binary nằm ở `/usr/bin` do `root` sở hữu và do trình quản lý
+    gói theo dõi, nên app không tự ghi đè được. Nút sẽ đổi thành **Mở trang tải**;
+    tải gói mới rồi cài đè như lần đầu:
+
+    ```bash
+    sudo apt install ./demucs-studio_x.y.z_amd64.deb
+    sudo dnf install ./demucs-studio-x.y.z-1.x86_64.rpm
+    ```
+
+!!! note "Bản dev không kiểm tra cập nhật"
+
+    App tự build từ source mang phiên bản `dev` và sẽ không bao giờ đề nghị cập
+    nhật — nếu không, một lần bấm nhầm sẽ ghi đè bản build của bạn.
+
+Sau khi cập nhật trên macOS, nhớ gỡ lại cờ quarantine như ở mục 1.
 
 ## Gỡ cài đặt
 

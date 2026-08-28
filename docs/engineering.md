@@ -66,6 +66,7 @@ internal/
   bus/                         log + progress event gửi lên webview
   netfetch/                    tải HTTP: progress, sha256, kiểm Content-Length
   deps/                        dò tìm & tự cài phụ thuộc, probe GPU
+  selfupdate/                  kiểm tra GitHub Release, tự thay thế & khởi động lại
   ytdl/                        yt-dlp → WAV
   engine/
     engine.go                  interface Backend, parser tqdm, ResetOutputDir
@@ -75,9 +76,75 @@ frontend/
   index.html  src/main.ts  src/style.css  src/types.ts
 packaging/linux/               nfpm.yaml, .desktop, run.sh
 packaging/windows/README.md    hướng dẫn đi kèm bản zip
+packaging/macos/README.md      hướng dẫn đi kèm bản dmg
 scripts/release-build.sh       build đủ 4 gói cho một version cụ thể
 .github/                       workflow build (mọi PR) và release (semantic-release)
 ```
 
 Test nằm cạnh code (`*_test.go`), trừ `pipeline_test.go` ở gốc — đó là test tích
 hợp thật, gate bằng `DEMUCS_STUDIO_E2E=1` vì nó gọi mạng và chạy tách nhạc.
+
+---
+
+## Tự cập nhật { #tu-cap-nhat }
+
+Mỗi lần mở app, `CheckUpdate` hỏi
+`api.github.com/repos/…/releases/latest` một lần rồi so version với
+`main.appVersion` (giá trị do `-ldflags -X` nhúng lúc build). Lỗi mạng ở bước này
+bị nuốt im lặng — app chạy offline được nên "không có mạng" là trạng thái bình
+thường, không phải sự cố đáng báo.
+
+**Bản dev không bao giờ được mời cập nhật.** `appVersion` mặc định là `"dev"`,
+không parse được thành `x.y.z`, và `Check` thoát ngay trước cả khi gọi mạng. Nếu
+không có chặn này thì `make linux` rồi bấm Cập nhật sẽ ghi đè cây làm việc bằng
+một bản release.
+
+### Cái gì bị thay, và ở đâu
+
+`.deb`/`.rpm` cài binary vào `/usr/bin` do root sở hữu và được trình quản lý gói
+theo dõi từng file. Ghi đè sau lưng nó vừa fail vì quyền, vừa làm lệch file list
+nếu lỡ thành công. Nên `detectInstall` phân loại trước:
+
+| Kiểu | Dấu hiệu nhận biết | Thứ bị `rename` |
+| --- | --- | --- |
+| Portable Linux | có `run.sh` cạnh binary | cả thư mục cài |
+| Portable Windows | luôn luôn (chỉ phát hành `.zip`) | **riêng file `.exe`** |
+| macOS | binary nằm trong `*.app/Contents/MacOS/` | cả bundle `.app` |
+| `.deb`/`.rpm` | không có `run.sh` **và** nằm dưới `/usr`, `/opt`… | không thay — UI mở trang release |
+
+Windows là ngoại lệ vì nó **từ chối đổi tên một thư mục đang chứa image đang
+chạy**, nhưng lại **cho phép đổi tên chính file image đó**. Đó là lý do duy nhất
+`root` trên Windows là file chứ không phải thư mục.
+
+Điều kiện `underSystemPrefix` là có chủ đích: một binary trần nằm ngoài các prefix
+hệ thống (output của `go build` chẳng hạn) **không** phải bản `.deb`, nên nó được
+xếp `kindUnknown` thay vì hiện thông báo bảo người dùng đi cài lại một gói không
+tồn tại.
+
+### Vì sao tráo bằng rename chứ không ghi đè
+
+`Apply` giải nén vào thư mục tạm **nằm trong chính thư mục cha** của bản cài, rồi
+đổi tên hai lần:
+
+```
+root      → root.old      (bản đang chạy, giữ lại)
+staged    → root          (bản mới)
+```
+
+Hai điều này chỉ đúng khi tạm nằm cùng filesystem — `os.Rename` không vượt được
+mount, và `/tmp` thường là mount khác. Đổi lại:
+
+- Update bị ngắt giữa chừng để lại **hoặc** bản cũ **hoặc** bản mới, không bao giờ
+  là hỗn hợp nửa vời.
+- Bước hai fail thì đổi tên ngược lại được, người dùng vẫn còn app để mở.
+- Tiến trình đang chạy vẫn thực thi bình thường từ `root.old` — trên POSIX
+  inode còn sống sau khi đổi tên. `CleanupOld` xoá nó ở lần khởi động sau, vì đó
+  là thời điểm đầu tiên nó không còn là image đang chạy.
+
+`stage` còn kiểm binary có thật trong gói tải về trước khi tráo; thiếu bước này
+thì một archive hỏng sẽ được cài đè và người dùng mất luôn thứ để mở.
+
+!!! warning "Mới kiểm chứng trên Linux"
+
+    Đường Windows và macOS đã có unit test cho phần phân loại và giải nén, nhưng
+    thao tác tráo + khởi động lại chưa chạy thật trên hai OS đó.

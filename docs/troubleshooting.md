@@ -31,21 +31,30 @@ YouTube bắt giải một thử thách JavaScript để lấy link media. yt-dl
 đó là **deprecated**, và mất một số format.
 
 App tự dò `deno` / `node` / `bun` rồi truyền `--js-runtimes <tên>:<đường dẫn>` giúp
-bạn. Nhưng nếu **không có cái nào** thì hãy cài một cái — `deno` nhẹ nhất:
+bạn. Nhưng phải có ít nhất một cái trên máy.
 
-=== "Linux"
+**Cách sửa:** tab **Phụ thuộc** → dòng **JS runtime** → **Cài tự động**. App tải
+`deno` (~90 MB) vào thư mục riêng của nó, không đụng tới hệ thống.
 
-    ```bash
-    curl -fsSL https://deno.land/install.sh | sh
-    ```
+??? note "Muốn tự cài thay vì để app tải"
 
-=== "Windows"
+    Cài `deno`, `node` hoặc `bun` theo cách thông thường rồi bấm **Kiểm tra lại**:
 
-    ```powershell
-    winget install DenoLand.Deno
-    ```
+    === "Linux / macOS"
 
-Cài xong bấm **Kiểm tra lại** ở tab **Phụ thuộc**.
+        ```bash
+        curl -fsSL https://deno.land/install.sh | sh
+        ```
+
+    === "Windows"
+
+        ```powershell
+        winget install DenoLand.Deno
+        ```
+
+    App ưu tiên bản trong thư mục của nó hơn bản trong `PATH`, nên nếu đã lỡ bấm
+    *Cài tự động* thì bản đó sẽ được dùng. Xoá
+    `<thư mục dữ liệu>/bin/deno` để quay lại bản hệ thống.
 
 ## Video bị chặn hoặc giới hạn tuổi
 
