@@ -12,7 +12,11 @@ site/
 .next-version
 frontend/dist/*
 !frontend/dist/gitkeep
-dist/
+
+# Leading slash matters: an unanchored `dist/` also matches frontend/dist/, and
+# git cannot re-include a file whose parent directory is excluded — which
+# silently killed the gitkeep exception two lines up.
+/dist/
 *.tar.gz
 *.deb
 *.rpm

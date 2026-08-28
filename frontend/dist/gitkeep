@@ -1,0 +1,8 @@
+Keeps frontend/dist/ in the repository.
+
+main.go embeds this directory with `//go:embed all:frontend/dist`, and that
+pattern is a compile error when nothing matches — so on a fresh clone, before
+`wails build` has produced index.html and assets/, even `go test ./...` fails to
+build. .gitignore excludes everything here except this file for that reason.
+
+`make clean` deletes the built output and leaves this file alone.
