@@ -1,0 +1,16 @@
+build/bin
+node_modules
+
+# Local CodeGraph index — 7 MB of derived SQLite, rebuilt by `codegraph sync`.
+.codegraph/
+
+# MkDocs output; the site is built and published by .github/workflows/docs.yml.
+site/
+frontend/dist/*
+!frontend/dist/gitkeep
+dist/
+*.tar.gz
+*.deb
+*.rpm
+*.zip
+*.dmg

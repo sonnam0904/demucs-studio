@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DemucsStudio</title>
+    <link rel="icon" type="image/png" href="/appicon.png" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <img class="brand-mark" src="/appicon.png" alt="" width="34" height="34" />
+          <div>
+            <h1>DemucsStudio</h1>
+            <p id="brand-sub">YouTube → WAV → tách vocal</p>
+          </div>
+        </div>
+        <nav class="tabs" id="tabs">
+          <button class="tab is-active" data-tab="studio">Tách nhạc</button>
+          <button class="tab" data-tab="models">Model</button>
+          <button class="tab" data-tab="deps">Phụ thuộc</button>
+          <button class="tab" data-tab="settings">Cấu hình</button>
+        </nav>
+        <div class="topbar-right">
+          <span class="badge" id="gpu-badge" title="Thiết bị tính toán">…</span>
+        </div>
+      </header>
+
+      <div id="dep-banner" class="banner hidden">
+        <div class="banner-text">
+          <strong>Thiếu công cụ cần thiết</strong>
+          <span id="dep-banner-detail"></span>
+        </div>
+        <button class="btn btn-primary" id="dep-banner-fix">Cài tự động</button>
+      </div>
+
+      <main class="content">
+        <!-- ============================ STUDIO ============================ -->
+        <section class="panel" data-panel="studio">
+          <div class="card">
+            <h2 class="card-title" data-step="Nguồn audio"></h2>
+            <div class="url-row">
+              <input
+                id="url"
+                type="text"
+                placeholder="https://www.youtube.com/watch?v=…"
+                spellcheck="false"
+                autocomplete="off"
+              />
+              <button class="btn" id="btn-info">Xem thông tin</button>
+              <button class="btn btn-primary" id="btn-download">Tải WAV</button>
+            </div>
+            <div class="url-aux">
+              <button class="link" id="btn-pick-file">…hoặc chọn file audio có sẵn</button>
+              <span class="spacer"></span>
+              <label class="inline-field">
+                Định dạng tải
+                <select id="audio-format">
+                  <option value="wav">WAV</option>
+                  <option value="flac">FLAC</option>
+                  <option value="mp3">MP3</option>
+                </select>
+              </label>
+            </div>
+          </div>
+
+          <div class="card hidden" id="track-card">
+            <h2 class="card-title" data-step="File nguồn"></h2>
+            <div class="track">
+              <img id="track-thumb" class="track-thumb hidden" alt="" />
+              <div class="track-meta">
+                <div class="track-title" id="track-title"></div>
+                <div class="track-sub" id="track-sub"></div>
+                <div class="track-path" id="track-path"></div>
+                <audio id="track-audio" controls preload="metadata"></audio>
+                <div class="row-actions">
+                  <button class="link" id="btn-open-track">Mở file</button>
+                  <button class="link" id="btn-reveal-track">Mở thư mục</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" id="separate-card">
+            <h2 class="card-title" data-step="Tách vocal"></h2>
+            <div class="sep-grid">
+              <label class="field">
+                Model
+                <select id="model-select"></select>
+              </label>
+              <label class="field field-narrow">
+                Thiết bị
+                <select id="device-select">
+                  <option value="auto">Tự động</option>
+                  <option value="cuda">GPU (CUDA)</option>
+                  <option value="cpu">CPU</option>
+                </select>
+              </label>
+              <label class="field field-narrow">
+                Stem
+                <select id="stems-select">
+                  <option value="two">Vocal + nhạc nền</option>
+                  <option value="all">Tất cả stem</option>
+                </select>
+              </label>
+            </div>
+            <p class="model-note" id="model-note"></p>
+            <div class="row-actions">
+              <button class="btn btn-primary btn-lg" id="btn-separate" disabled>
+                Tách vocal
+              </button>
+              <button class="btn btn-ghost" id="btn-cancel" disabled>Huỷ</button>
+            </div>
+          </div>
+
+          <div class="card hidden" id="result-card">
+            <h2 class="card-title" data-step="Kết quả"></h2>
+            <div class="result-head" id="result-head"></div>
+            <div id="stem-list" class="stem-list"></div>
+            <div class="row-actions">
+              <button class="link" id="btn-open-stems">Mở thư mục kết quả</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============================ MODELS ============================ -->
+        <section class="panel hidden" data-panel="models">
+          <div class="card">
+            <div class="card-head">
+              <h2 class="card-title">Model tách nhạc</h2>
+              <button class="btn" id="btn-refresh-roformer">
+                Tìm thêm model RoFormer
+              </button>
+            </div>
+            <p class="hint">
+              Model được lưu cục bộ trong <code id="models-dir"></code> nên chỉ tải
+              một lần và sau đó chạy hoàn toàn offline.
+            </p>
+            <div id="model-list" class="model-list"></div>
+          </div>
+        </section>
+
+        <!-- ============================= DEPS ============================= -->
+        <section class="panel hidden" data-panel="deps">
+          <div class="card">
+            <div class="card-head">
+              <h2 class="card-title">Công cụ bên ngoài</h2>
+              <button class="btn" id="btn-recheck">Kiểm tra lại</button>
+            </div>
+            <div id="dep-list" class="dep-list"></div>
+          </div>
+
+          <div class="card">
+            <h2 class="card-title">Cài engine Python</h2>
+            <p class="hint">
+              Demucs và audio-separator là công cụ Python. App sẽ tạo môi trường
+              riêng tại <code id="venv-dir"></code> để không ảnh hưởng Python hệ
+              thống.
+            </p>
+            <div class="sep-grid">
+              <label class="field field-narrow">
+                PyTorch
+                <select id="accel-select">
+                  <option value="reuse">Dùng lại bản đã có</option>
+                  <option value="cuda">Tải bản CUDA (GPU)</option>
+                  <option value="cpu">Tải bản CPU</option>
+                </select>
+              </label>
+              <label class="field field-narrow">
+                CUDA
+                <select id="cuda-tag">
+                  <option value="cu124">cu124</option>
+                  <option value="cu121">cu121</option>
+                  <option value="cu126">cu126</option>
+                  <option value="cu118">cu118</option>
+                </select>
+              </label>
+              <div class="field">
+                Engine
+                <div class="check-row">
+                  <label><input type="checkbox" id="eng-demucs" checked /> Demucs</label>
+                  <label><input type="checkbox" id="eng-roformer" checked /> audio-separator (RoFormer)</label>
+                </div>
+              </div>
+            </div>
+            <div class="row-actions">
+              <button class="btn btn-primary" id="btn-install-engines">Cài engine</button>
+              <button class="btn" id="btn-update-ytdlp">Cập nhật yt-dlp</button>
+            </div>
+            <p class="hint warn">
+              Nếu chọn tải PyTorch mới, dung lượng có thể vài GB.
+            </p>
+          </div>
+        </section>
+
+        <!-- =========================== SETTINGS =========================== -->
+        <section class="panel hidden" data-panel="settings">
+          <div class="card">
+            <h2 class="card-title">Thư mục &amp; tải về</h2>
+            <label class="field">
+              Thư mục lưu kết quả
+              <div class="url-row">
+                <input type="text" id="set-outdir" spellcheck="false" />
+                <button class="btn" id="btn-pick-outdir">Chọn…</button>
+              </div>
+            </label>
+            <div class="sep-grid">
+              <label class="field field-narrow">
+                Định dạng stem
+                <select id="set-stemformat">
+                  <option value="wav">WAV</option>
+                  <option value="flac">FLAC</option>
+                  <option value="mp3">MP3</option>
+                </select>
+              </label>
+              <label class="field field-narrow">
+                MP3 bitrate
+                <select id="set-mp3">
+                  <option value="320">320 kbps</option>
+                  <option value="256">256 kbps</option>
+                  <option value="192">192 kbps</option>
+                  <option value="128">128 kbps</option>
+                </select>
+              </label>
+              <label class="field field-narrow">
+                Cookies từ browser
+                <select id="set-cookies">
+                  <option value="">Không dùng</option>
+                  <option value="chrome">Chrome</option>
+                  <option value="firefox">Firefox</option>
+                  <option value="edge">Edge</option>
+                  <option value="brave">Brave</option>
+                  <option value="chromium">Chromium</option>
+                  <option value="opera">Opera</option>
+                  <option value="vivaldi">Vivaldi</option>
+                </select>
+              </label>
+            </div>
+            <p class="hint">
+              Chọn cookies từ browser khi YouTube yêu cầu đăng nhập hoặc chặn
+              video giới hạn tuổi.
+            </p>
+          </div>
+
+          <div class="card">
+            <h2 class="card-title">Tham số Demucs</h2>
+            <div class="sep-grid">
+              <label class="field field-narrow">
+                Shifts <span class="muted" id="lbl-shifts"></span>
+                <input type="range" id="set-shifts" min="0" max="10" step="1" />
+              </label>
+              <label class="field field-narrow">
+                Overlap <span class="muted" id="lbl-overlap"></span>
+                <input type="range" id="set-overlap" min="10" max="75" step="5" />
+              </label>
+              <label class="field field-narrow">
+                Jobs (CPU) <span class="muted" id="lbl-jobs"></span>
+                <input type="range" id="set-jobs" min="1" max="16" step="1" />
+              </label>
+              <label class="field field-narrow">
+                Segment (0 = mặc định)
+                <input type="number" id="set-segment" min="0" max="120" step="1" />
+              </label>
+            </div>
+            <p class="hint">
+              Shifts &gt; 0 tăng chất lượng nhưng thời gian chạy tăng theo cùng
+              hệ số. Overlap cao giúp mượt hơn ở mép các đoạn.
+            </p>
+          </div>
+
+          <div class="card">
+            <h2 class="card-title">Tham số RoFormer</h2>
+            <div class="sep-grid">
+              <label class="field field-narrow">
+                Segment size
+                <input type="number" id="set-rf-seg" min="32" max="2048" step="32" />
+              </label>
+              <label class="field field-narrow">
+                Overlap
+                <input type="number" id="set-rf-overlap" min="2" max="64" step="1" />
+              </label>
+              <label class="field field-narrow">
+                Batch size
+                <input type="number" id="set-rf-batch" min="1" max="16" step="1" />
+              </label>
+              <label class="field field-narrow">
+                Normalization
+                <input type="number" id="set-rf-norm" min="0.1" max="1" step="0.05" />
+              </label>
+            </div>
+            <p class="hint">
+              Giảm segment size / batch size nếu GPU báo hết VRAM.
+            </p>
+          </div>
+
+          <div class="card">
+            <h2 class="card-title">Đường dẫn thủ công</h2>
+            <p class="hint">Để trống nếu muốn app tự dò tìm.</p>
+            <div class="path-grid">
+              <label class="field">yt-dlp<input type="text" id="set-ytdlp" spellcheck="false" /></label>
+              <label class="field">ffmpeg<input type="text" id="set-ffmpeg" spellcheck="false" /></label>
+              <label class="field">python<input type="text" id="set-python" spellcheck="false" /></label>
+              <label class="field">demucs<input type="text" id="set-demucs" spellcheck="false" /></label>
+              <label class="field">audio-separator<input type="text" id="set-audiosep" spellcheck="false" /></label>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h2 class="card-title">Thông tin</h2>
+              <button class="btn" id="btn-open-appdir">Mở thư mục dữ liệu</button>
+            </div>
+            <dl class="kv" id="about-kv"></dl>
+          </div>
+        </section>
+      </main>
+
+      <footer class="statusbar">
+        <div class="progress-wrap">
+          <div class="progress" id="progress">
+            <div class="progress-fill" id="progress-fill"></div>
+          </div>
+          <div class="progress-text">
+            <span id="progress-label">Sẵn sàng</span>
+            <span class="muted" id="progress-detail"></span>
+          </div>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="btn-toggle-log">Log ▲</button>
+      </footer>
+
+      <div class="logpane hidden" id="logpane">
+        <div class="log-head">
+          <span>Nhật ký</span>
+          <div>
+            <button class="link" id="btn-clear-log">Xoá</button>
+          </div>
+        </div>
+        <div class="log-body" id="log-body"></div>
+      </div>
+
+      <div class="toast-stack" id="toasts"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

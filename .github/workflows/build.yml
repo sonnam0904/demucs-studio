@@ -1,0 +1,93 @@
+name: Build packages
+
+# Produces the same artifacts as a release, without publishing anything. Runs on
+# every pull request so packaging breakage surfaces before it can block a
+# release, and can be dispatched manually to get a build of any branch.
+#
+# Split by host for the same reason release.yml is: the Linux runner produces
+# the Linux and Windows packages, and only a macOS host can build the .dmg.
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >
+          Version to stamp into the binaries and packages. Avoid hyphens — RPM
+          rejects them in a version string.
+        required: false
+        default: "0.0.0"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Resolved once and shared, so the two build jobs cannot stamp different
+  # versions into their halves of the same build.
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      # Passed through the environment rather than interpolated into the script,
+      # so a dispatch input cannot inject shell.
+      - name: Resolve version
+        id: resolve
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION:-0.0.0.dev.${GITHUB_SHA::7}}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building $version"
+
+  package:
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-build
+
+      - name: Unit tests
+        run: go test ./...
+
+      - name: Build Linux and Windows packages
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: scripts/release-build.sh "$VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: demucs-studio-${{ needs.version.outputs.version }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  package-macos:
+    needs: version
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-build
+
+      - name: Unit tests
+        run: go test ./...
+
+      - name: Build macOS package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: scripts/release-build-macos.sh "$VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: demucs-studio-${{ needs.version.outputs.version }}-macos
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 14

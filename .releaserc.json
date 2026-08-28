@@ -1,0 +1,54 @@
+{
+  "repositoryUrl": "https://github.com/sonnam0904/demucs-studio.git",
+  "branches": ["master"],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/changelog",
+      {
+        "changelogFile": "CHANGELOG.md"
+      }
+    ],
+    [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "scripts/release-build.sh ${nextRelease.version}"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "assets": [
+          {
+            "path": "dist/*-linux-amd64.tar.gz",
+            "label": "Linux portable (.tar.gz)"
+          },
+          {
+            "path": "dist/*.deb",
+            "label": "Debian / Ubuntu (.deb)"
+          },
+          {
+            "path": "dist/*.rpm",
+            "label": "Fedora / RHEL (.rpm)"
+          },
+          {
+            "path": "dist/*-windows-amd64.zip",
+            "label": "Windows portable (.zip)"
+          },
+          {
+            "path": "dist/*-macos-universal.dmg",
+            "label": "macOS universal (.dmg)"
+          }
+        ]
+      }
+    ],
+    [
+      "@semantic-release/git",
+      {
+        "assets": ["CHANGELOG.md", "wails.json"],
+        "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+      }
+    ]
+  ]
+}

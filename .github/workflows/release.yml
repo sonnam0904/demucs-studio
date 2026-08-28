@@ -1,0 +1,127 @@
+name: Release
+
+# semantic-release reads the conventional-commit messages pushed to master,
+# decides the next version, then builds and attaches every package to the
+# GitHub Release.
+#
+# Building inside semantic-release (rather than in a workflow triggered by the
+# new tag) is deliberate: tags and releases created with GITHUB_TOKEN do not
+# trigger further workflow runs, so a tag-triggered build would never fire
+# without an extra PAT.
+#
+# A Wails macOS build needs CGO and the system frameworks, so it cannot be
+# cross-compiled from the Linux runner that publishes the release. Hence three
+# jobs: `version` works out what the release will be called, `macos` builds the
+# .dmg under that name, and `release` picks it up and publishes everything at
+# once, so the release is never briefly missing its macOS asset.
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write # push the changelog commit, create the tag and release
+  issues: write # semantic-release opens an issue if a release fails
+  pull-requests: write
+
+# Two releases at once would race on the tag and the changelog commit.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # Runs the same commit analysis the real release will run, without publishing,
+  # purely to learn the version number the macOS job has to stamp into its
+  # build. The two runs see identical commits because the concurrency group
+  # above keeps releases from overlapping; if they ever disagreed anyway,
+  # release-build.sh checks the .dmg filename against the version it was given
+  # and fails rather than publishing a mismatched asset.
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+      publish: ${{ steps.next.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # semantic-release needs the full tag history
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Resolve next version
+        id: next
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          npx semantic-release --dry-run 2>&1 | tee dry-run.log
+          version="$(sed -n 's/.*The next release version is \([0-9][^ ]*\).*/\1/p' dry-run.log | tail -1)"
+          if [ -z "$version" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "No release needed for this push."
+            exit 0
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Next version: $version"
+
+  macos:
+    needs: version
+    if: needs.version.outputs.publish == 'true'
+    # macos-14 and later are Apple Silicon; the build is universal either way,
+    # but cross-compiling the arm64 slice is only supported from an arm64 host.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-build
+
+      - name: Build macOS package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: scripts/release-build-macos.sh "$VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: [version, macos]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false # it authenticates with GITHUB_TOKEN itself
+
+      - uses: ./.github/actions/setup-build
+
+      - name: Unit tests
+        run: go test ./...
+
+      # Dropped into dist/ before the build so release-build.sh — which only
+      # cleans the archives it produces itself — leaves it in place and the
+      # asset globs pick it up alongside the Linux and Windows packages.
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist
+
+      - name: Install semantic-release
+        run: npm ci
+
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECT_MACOS: "1"
+        run: npx semantic-release

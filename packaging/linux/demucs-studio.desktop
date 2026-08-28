@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=DemucsStudio
+GenericName=Vocal separator
+Comment=Tải audio từ YouTube và tách vocal bằng Demucs / BS-RoFormer
+Exec=demucs-studio
+Icon=demucs-studio
+Terminal=false
+Categories=AudioVideo;Audio;Music;
+Keywords=demucs;roformer;vocal;karaoke;youtube;stem;
+StartupWMClass=DemucsStudio

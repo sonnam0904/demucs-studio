@@ -1,0 +1,20 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "demucs-studio",
+  "outputfilename": "demucs-studio",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "sonnn",
+    "email": "sonnguyennam@vccorp.vn"
+  },
+  "info": {
+    "companyName": "DemucsStudio",
+    "productName": "DemucsStudio",
+    "productVersion": "0.1.0",
+    "copyright": "MIT",
+    "comments": "Tải audio từ YouTube và tách vocal bằng Demucs / BS-RoFormer"
+  }
+}

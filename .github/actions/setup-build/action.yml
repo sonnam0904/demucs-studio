@@ -1,0 +1,47 @@
+name: Setup build toolchain
+description: >
+  Installs Go, Node, the Wails CLI and nfpm, plus the GTK/WebKit headers a Linux
+  runner needs. Works on both the Linux runner that produces the Linux and
+  Windows packages and the macOS runner that produces the .dmg.
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+        cache: true
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
+
+    # webkit2gtk 4.1 is what the Wails Linux webview links against. xvfb is a
+    # safety net: `wails build` generates the TypeScript bindings by running the
+    # compiled app. zip builds the Windows archive; jq stamps wails.json.
+    #
+    # None of this applies to macOS: WKWebView is part of the OS, the Xcode
+    # command line tools are preinstalled on the runner, and jq, ditto, hdiutil
+    # and codesign all ship with macOS.
+    - name: Install system packages
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          libgtk-3-dev libwebkit2gtk-4.1-dev xvfb zip jq
+
+    # Pin the CLI to the library version in go.mod so the two never drift.
+    # nfpm only builds the .deb/.rpm, so it is not needed on macOS.
+    - name: Install Wails CLI and nfpm
+      shell: bash
+      run: |
+        wails_version="$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)"
+        echo "Installing wails CLI $wails_version"
+        go install "github.com/wailsapp/wails/v2/cmd/wails@${wails_version}"
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+        fi
+        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"

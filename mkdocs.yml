@@ -1,0 +1,99 @@
+site_name: DemucsStudio
+site_description: Tải audio từ YouTube và tách vocal bằng Demucs v4 / BS-RoFormer — chạy hoàn toàn trên máy bạn.
+site_author: sonnn
+site_url: https://sonnam0904.github.io/demucs-studio/
+
+repo_url: https://github.com/sonnam0904/demucs-studio
+repo_name: sonnam0904/demucs-studio
+edit_uri: edit/master/docs/
+
+copyright: MIT — Demucs và các model RoFormer giữ license riêng của tác giả.
+
+theme:
+  name: material
+  language: vi
+  logo: assets/appicon.png
+  favicon: assets/appicon.png
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/weather-night
+        name: Chuyển sang giao diện tối
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/weather-sunny
+        name: Chuyển sang giao diện sáng
+
+nav:
+  - Giới thiệu: index.md
+  - Dành cho người dùng:
+      - Cài đặt: installation.md
+      - Hướng dẫn sử dụng: usage.md
+      - Xử lý sự cố: troubleshooting.md
+  - Dành cho người phát triển:
+      - Build và release: build.md
+      - Ghi chú kỹ thuật: engineering.md
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      permalink_title: Liên kết tới mục này
+  - pymdownx.details
+  # Required for the :material-xxx: icon shortcodes; without it they render as
+  # literal text.
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search:
+      lang: vi
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/sonnam0904/demucs-studio
+      name: Mã nguồn trên GitHub
+
+# Fail the build on a broken link or a dangling #anchor rather than shipping a
+# dead page. Anchor checking needs MkDocs 1.6+.
+strict: true
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn

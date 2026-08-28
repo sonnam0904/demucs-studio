@@ -1,0 +1,42 @@
+# nfpm config: builds the .deb and .rpm from the already-compiled binary.
+#   VERSION=0.1.0 nfpm package -f packaging/linux/nfpm.yaml -p deb -t dist
+#
+# `src` paths are resolved against the working directory, not this file, so run
+# nfpm from the repository root (which is what `make deb` does).
+name: demucs-studio
+arch: amd64
+platform: linux
+version: ${VERSION}
+section: sound
+priority: optional
+maintainer: sonnn <sonnguyennam@vccorp.vn>
+description: |
+  DemucsStudio — tải audio từ YouTube và tách vocal.
+  Hỗ trợ Demucs v4 (htdemucs_ft) và các model BS-RoFormer / Mel-Band RoFormer.
+homepage: https://github.com/sonnam0904/demucs-studio
+license: MIT
+
+# webkit2gtk is what the Wails webview links against; the rest are the tools
+# the app drives. python3 is Recommends, not Depends: the app can install the
+# engines into its own venv, and a user who only wants to download audio does
+# not need it.
+depends:
+  - libwebkit2gtk-4.1-0
+  - libgtk-3-0
+recommends:
+  - ffmpeg
+  - yt-dlp
+  - python3
+  - python3-venv
+
+contents:
+  - src: build/bin/demucs-studio
+    dst: /usr/bin/demucs-studio
+    file_info:
+      mode: 0755
+  - src: build/appicon.png
+    dst: /usr/share/icons/hicolor/512x512/apps/demucs-studio.png
+  - src: packaging/linux/demucs-studio.desktop
+    dst: /usr/share/applications/demucs-studio.desktop
+  - src: README.md
+    dst: /usr/share/doc/demucs-studio/README.md
