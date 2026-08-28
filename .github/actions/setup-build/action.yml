@@ -35,13 +35,23 @@ runs:
 
     # Pin the CLI to the library version in go.mod so the two never drift.
     # nfpm only builds the .deb/.rpm, so it is not needed on macOS.
+    #
+    # NFPM_VERSION is pinned rather than @latest because `go install` builds it
+    # with this repo's toolchain, and setup-go pins that to the go directive in
+    # go.mod with GOTOOLCHAIN=local. nfpm v2.47.0 raised its own requirement to
+    # go 1.26.4, so @latest broke the Linux job overnight without anything here
+    # changing. v2.46.0 is the last release that still declares go 1.25.
+    # Raise this together with the go directive in go.mod, never on its own.
     - name: Install Wails CLI and nfpm
       shell: bash
+      env:
+        NFPM_VERSION: v2.46.0
       run: |
         wails_version="$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)"
         echo "Installing wails CLI $wails_version"
         go install "github.com/wailsapp/wails/v2/cmd/wails@${wails_version}"
         if [ "$RUNNER_OS" = "Linux" ]; then
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          echo "Installing nfpm $NFPM_VERSION"
+          go install "github.com/goreleaser/nfpm/v2/cmd/nfpm@${NFPM_VERSION}"
         fi
         echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
