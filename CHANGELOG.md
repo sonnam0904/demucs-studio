@@ -1,3 +1,10 @@
+## [1.1.1](https://github.com/sonnam0904/demucs-studio/compare/v1.1.0...v1.1.1) (2026-08-28)
+
+
+### Bug Fixes
+
+* Simplify window reveal logic and remove unused DOM readiness handling ([346ad90](https://github.com/sonnam0904/demucs-studio/commit/346ad907df6fdeccdc983de61e0d7e19533b33b4))
+
 # [1.1.0](https://github.com/sonnam0904/demucs-studio/compare/v1.0.0...v1.1.0) (2026-08-28)
 
 
