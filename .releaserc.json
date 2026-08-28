@@ -13,6 +13,7 @@
     [
       "@semantic-release/exec",
       {
+        "verifyReleaseCmd": "echo ${nextRelease.version} > .next-version",
         "prepareCmd": "scripts/release-build.sh ${nextRelease.version}"
       }
     ],

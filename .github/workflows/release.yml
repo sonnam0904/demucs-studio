@@ -58,15 +58,26 @@ jobs:
         id: next
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # The version comes from a file the exec plugin's verifyReleaseCmd
+        # writes, not from the log. Scraping the log looked equivalent and was
+        # not: on a first release semantic-release says "There is no previous
+        # release, the next release version is 1.0.0" — lowercase "the" — so a
+        # pattern written against the usual "The next release version is …"
+        # silently matched nothing and skipped the release.
+        #
+        # verifyRelease runs in dry-run mode (only prepare, publish, addChannel,
+        # success and fail are skipped), and the file is written only when there
+        # really is a release to make, so its absence is the "nothing to do"
+        # signal.
         run: |
-          set -o pipefail
-          npx semantic-release --dry-run 2>&1 | tee dry-run.log
-          version="$(sed -n 's/.*The next release version is \([0-9][^ ]*\).*/\1/p' dry-run.log | tail -1)"
-          if [ -z "$version" ]; then
+          rm -f .next-version
+          npx semantic-release --dry-run
+          if [ ! -s .next-version ]; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "No release needed for this push."
             exit 0
           fi
+          version="$(cat .next-version)"
           echo "publish=true" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Next version: $version"

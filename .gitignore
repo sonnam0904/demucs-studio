@@ -6,6 +6,10 @@ node_modules
 
 # MkDocs output; the site is built and published by .github/workflows/docs.yml.
 site/
+
+# Written by semantic-release's verifyReleaseCmd so the workflow can read the
+# next version without scraping the log.
+.next-version
 frontend/dist/*
 !frontend/dist/gitkeep
 dist/
