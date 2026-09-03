@@ -19,6 +19,8 @@ export function CheckUpdate():Promise<selfupdate.Status>;
 
 export function ClearLog():Promise<void>;
 
+export function CudaTargets():Promise<Array<deps.CudaTarget>>;
+
 export function Download(arg1:string):Promise<ytdl.Track>;
 
 export function EnsureModel(arg1:string):Promise<void>;

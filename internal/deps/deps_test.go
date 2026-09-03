@@ -2,6 +2,7 @@ package deps
 
 import (
 	"archive/zip"
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -465,5 +466,165 @@ func TestUnzipExtractsOnlyWantedNames(t *testing.T) {
 	}
 	if entries, err := os.ReadDir(empty); err != nil || len(entries) != 0 {
 		t.Errorf("expected nothing extracted, got %d entries (err %v)", len(entries), err)
+	}
+}
+
+func TestArchMismatchGetsAnActionableHint(t *testing.T) {
+	// The probe names the problem but not the cure, and "sm_52 is missing from
+	// sm_75, sm_80, …" tells a user nothing about what to do next.
+	mismatch := "GPU NVIDIA GeForce GTX 960 (sm_52) không nằm trong các kiến trúc torch hỗ trợ (sm_75, sm_80)"
+	got := withArchHint(mismatch)
+	// Points at the install panel rather than naming an index. Naming one was
+	// wrong once: the hint said cu118 on the assumption that all current builds
+	// had dropped Maxwell, but cu126 still carries sm_50 and is much newer.
+	if !strings.Contains(got, "Phụ thuộc") {
+		t.Errorf("hint should send the user to the install panel, got %q", got)
+	}
+	if strings.Contains(got, "cu118") || strings.Contains(got, "cu126") {
+		t.Errorf("hint must not hardcode an index — it depends on the card: %q", got)
+	}
+	if !strings.HasPrefix(got, mismatch) {
+		t.Errorf("hint must be appended, not replace the diagnosis: %q", got)
+	}
+
+	// Every other failure has a different cure, so none of them may collect it.
+	for _, other := range []string{
+		"",
+		"torch không thấy CUDA",
+		"chưa tìm thấy PyTorch",
+		"không chạy được kiểm tra CUDA: exit status 1",
+	} {
+		if got := withArchHint(other); got != other {
+			t.Errorf("withArchHint(%q) = %q, want it unchanged", other, got)
+		}
+	}
+}
+
+func TestVenvSeesSystemPackages(t *testing.T) {
+	// Decides whether an explicit PyTorch flavour can be installed at all: in a
+	// venv built with --system-site-packages, pip treats a torch in the user
+	// site as satisfying the requirement and installs nothing into the venv.
+	for _, tc := range []struct {
+		name, cfg string
+		want      bool
+	}{
+		{"true", "home = /usr/bin\ninclude-system-site-packages = true\nversion = 3.11.15\n", true},
+		{"false", "home = /usr/bin\ninclude-system-site-packages = false\nversion = 3.11.15\n", false},
+		{"viết hoa vẫn nhận", "include-system-site-packages = True\n", true},
+		{"thừa khoảng trắng", "  include-system-site-packages   =   true  \n", true},
+		{"không có khoá nào", "home = /usr/bin\nversion = 3.11.15\n", false},
+		{"file rỗng", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("DEMUCS_STUDIO_HOME", home)
+			if err := os.MkdirAll(paths.VenvDir(), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cfg := filepath.Join(paths.VenvDir(), "pyvenv.cfg")
+			if err := os.WriteFile(cfg, []byte(tc.cfg), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := venvSeesSystemPackages(); got != tc.want {
+				t.Errorf("venvSeesSystemPackages() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// No venv at all must read as isolated: guessing "true" would skip the
+	// rebuild that a flavour switch depends on.
+	t.Run("chưa có venv", func(t *testing.T) {
+		t.Setenv("DEMUCS_STUDIO_HOME", t.TempDir())
+		if venvSeesSystemPackages() {
+			t.Error("a missing venv should not report system site-packages")
+		}
+	})
+}
+
+func TestCUDARuntimePrefixesCoverWhatTorchBundles(t *testing.T) {
+	// The real reason this matters: nvidia-cudnn-cu11 and nvidia-cudnn-cu13
+	// unpack into the same nvidia/cudnn/lib directory and overwrite each
+	// other's libcudnn.so.9, so a leftover from another CUDA major shadows the
+	// right one and every convolution fails. The whole set has to go on a
+	// flavour switch, not just the torch packages.
+	matches := func(name string) bool {
+		lower := strings.ToLower(name)
+		for _, p := range cudaRuntimePrefixes {
+			if strings.HasPrefix(lower, p) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Names taken verbatim from a real venv after a cu118 and a cu130 install.
+	for _, name := range []string{
+		"nvidia-cudnn-cu11", "nvidia-cudnn-cu13", "nvidia-cuda-runtime",
+		"nvidia-cublas-cu11", "nvidia-cufft", "nvidia-nvjitlink",
+		"nvidia-cuda-nvrtc", "cuda-toolkit", "cuda-bindings", "cuda-pathfinder",
+		"NVIDIA-cuDNN-cu11", // pip freeze preserves case; matching must not
+	} {
+		if !matches(name) {
+			t.Errorf("%q should be treated as CUDA runtime and removed", name)
+		}
+	}
+
+	// Nothing else may be swept up — losing these would break the engines.
+	for _, name := range []string{
+		"torch", "torchaudio", "demucs", "audio-separator", "numpy",
+		"onnxruntime-gpu", "einops", "pip", "cudatoolkit-helper-lookalike",
+	} {
+		if name == "cudatoolkit-helper-lookalike" {
+			// Starts with "cuda" but not "cuda-"/"cuda_": must not match.
+			if matches(name) {
+				t.Errorf("%q must not be swept up by the prefix match", name)
+			}
+			continue
+		}
+		if matches(name) {
+			t.Errorf("%q must not be removed", name)
+		}
+	}
+}
+
+func TestLooksNumericVersion(t *testing.T) {
+	// nvidia-smi answers "[Not Supported]" for a field an old driver cannot
+	// report, exit code 0. Letting that through made it truthy in the webview,
+	// which then stated with confidence that a working card was unsupported.
+	for _, ok := range []string{"5.2", "580.173.02", "450", "12.0"} {
+		if !looksNumericVersion(ok) {
+			t.Errorf("%q should be accepted as a version", ok)
+		}
+	}
+	for _, bad := range []string{"", "[Not Supported]", "N/A", "...", "5.2a", "unknown"} {
+		if looksNumericVersion(bad) {
+			t.Errorf("%q must be rejected, not passed on as a version", bad)
+		}
+	}
+}
+
+func TestDescribeCardOnlyFillsWhatIsMissing(t *testing.T) {
+	// Values the torch probe supplied must win; smiCard is a fallback for the
+	// gaps, notably the CPU-only-torch case where the probe reports no
+	// capability at all.
+	full := GPU{Name: "probe card", Capability: "8.6", Driver: "570.1"}
+	if got := describeCard(context.Background(), full); got != full {
+		t.Errorf("describeCard overwrote known values: %+v", got)
+	}
+
+	// With every field already set it must not shell out at all; a bogus PATH
+	// would make nvidia-smi fail and blank the fields if it did.
+	t.Setenv("PATH", t.TempDir())
+	if got := describeCard(context.Background(), full); got != full {
+		t.Errorf("describeCard changed a complete GPU: %+v", got)
+	}
+	// And with nothing to find, the gaps simply stay empty rather than becoming
+	// junk the UI would render as a verdict.
+	got := describeCard(context.Background(), GPU{Checked: true, Reason: "chưa tìm thấy PyTorch"})
+	if got.Capability != "" || got.Driver != "" {
+		t.Errorf("expected empty card fields with no nvidia-smi, got %+v", got)
+	}
+	if got.Reason != "chưa tìm thấy PyTorch" {
+		t.Errorf("describeCard must not touch Reason, got %q", got.Reason)
 	}
 }

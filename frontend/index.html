@@ -179,12 +179,10 @@
               </label>
               <label class="field field-narrow">
                 CUDA
-                <select id="cuda-tag">
-                  <option value="cu124">cu124</option>
-                  <option value="cu121">cu121</option>
-                  <option value="cu126">cu126</option>
-                  <option value="cu118">cu118</option>
-                </select>
+                <!-- Options are rendered by renderCudaTargets() from
+                     App.CudaTargets(), because the compatible-card list has to
+                     come from the same verified table the labels do. -->
+                <select id="cuda-tag"></select>
               </label>
               <div class="field">
                 Engine
@@ -194,8 +192,12 @@
                 </div>
               </div>
             </div>
+            <div id="cuda-support" class="cuda-support hidden"></div>
             <div class="row-actions">
-              <button class="btn btn-primary" id="btn-install-engines">Cài engine</button>
+              <!-- Disabled until renderCudaTargets has filled #cuda-tag:
+                   installing with an empty select sends cudaTag: "" and lets
+                   the backend pick silently. -->
+              <button class="btn btn-primary" id="btn-install-engines" disabled>Cài engine</button>
               <button class="btn" id="btn-update-ytdlp">Cập nhật yt-dlp</button>
             </div>
             <p class="hint warn">

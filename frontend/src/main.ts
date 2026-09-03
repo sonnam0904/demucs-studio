@@ -3,6 +3,7 @@ import * as App from "../wailsjs/go/main/App";
 import { BrowserOpenURL, EventsOn } from "../wailsjs/runtime/runtime";
 import type {
   Bootstrap,
+  CudaTarget,
   DepsReport,
   LogLine,
   Model,
@@ -80,6 +81,114 @@ const state: State = {
   inputPath: "",
   busy: false,
 };
+
+// ------------------------------------------------------------- cuda targets
+
+// Filled once at startup from App.CudaTargets(). Kept module-level because the
+// support panel has to re-render on every change of the CUDA dropdown.
+let cudaTargets: CudaTarget[] = [];
+
+// The capability the current table was built for, so renderDeps can tell "not
+// asked yet" from "asked, and nothing fits". Keying the re-fetch off
+// `!some(supported)` instead did both jobs badly: it never fired for a card
+// that IS supported, so the ✓ verdict never appeared, and it fired on every
+// deps event for a card no index covers.
+let cudaTargetsCapability: string | null = null;
+
+async function renderCudaTargets(preferred: string, capability: string) {
+  const select = $<HTMLSelectElement>("cuda-tag");
+  let fetched: CudaTarget[];
+  try {
+    fetched = (await api.CudaTargets()) as CudaTarget[];
+  } catch (e) {
+    // index.html ships this select empty, so there is no earlier list to fall
+    // back on: without options the user cannot pick an index at all and the
+    // install would silently use the backend default. Say so instead.
+    toast(`Không lấy được danh sách bản CUDA: ${errText(e)}`, "error");
+    return;
+  }
+  cudaTargets = fetched;
+  cudaTargetsCapability = capability;
+
+  select.textContent = "";
+  for (const t of cudaTargets) {
+    const opt = document.createElement("option");
+    opt.value = t.tag;
+    const notes = [t.recommended ? "mặc định" : "", `torch ${t.torch}`, `driver ${t.driver}`]
+      .filter(Boolean)
+      .join(" · ");
+    opt.textContent = `${t.tag} (${notes})`;
+    select.appendChild(opt);
+  }
+  // A saved choice wins; otherwise start on the recommended index.
+  const fallback = cudaTargets.find((t) => t.recommended)?.tag ?? "";
+  select.value = cudaTargets.some((t) => t.tag === preferred) ? preferred : fallback;
+  refreshInstallEnginesButton();
+  renderCudaSupport();
+}
+
+// Installing with an empty CUDA select would send cudaTag: "" and let the
+// backend silently choose for the user, so the button waits for the options.
+function refreshInstallEnginesButton() {
+  const ready = cudaTargets.length > 0 && $<HTMLSelectElement>("cuda-tag").value !== "";
+  const btn = $<HTMLButtonElement>("btn-install-engines");
+  btn.disabled = !ready;
+  btn.title = ready ? "" : "Đang lấy danh sách bản CUDA…";
+}
+
+function renderCudaSupport() {
+  const box = $("cuda-support");
+  const tag = $<HTMLSelectElement>("cuda-tag").value;
+  const target = cudaTargets.find((t) => t.tag === tag);
+  if (!target) {
+    box.classList.add("hidden");
+    return;
+  }
+  box.classList.remove("hidden");
+  box.textContent = "";
+
+  const gpu = state.deps?.gpu;
+  const verdict = document.createElement("strong");
+  verdict.className = "cuda-support-verdict";
+  box.classList.remove("is-good", "is-warn");
+
+  // Only a capability we can actually read gets a verdict. An old driver
+  // answers "[Not Supported]", which is truthy but unparseable — asserting
+  // "✗ does not work" from it slandered cards that work fine.
+  const known = /^\d+\.\d+$/.test(gpu?.capability ?? "");
+  if (known && gpu) {
+    const card = gpu.name || "GPU của bạn";
+    if (target.supported) {
+      verdict.textContent = `✓ ${card} (compute ${gpu.capability}) chạy được ${target.tag}`;
+      box.classList.add("is-good");
+    } else {
+      const fits = cudaTargets.filter((t) => t.supported).map((t) => t.tag);
+      verdict.textContent =
+        `✗ ${card} (compute ${gpu.capability}) KHÔNG chạy được ${target.tag}` +
+        (target.blocker ? `: ${target.blocker}` : "") +
+        (fits.length ? ` — hãy chọn ${fits.join(" hoặc ")}` : "");
+      box.classList.add("is-warn");
+    }
+  } else {
+    verdict.textContent = `Các dòng card ${target.tag} hỗ trợ:`;
+  }
+  box.appendChild(verdict);
+
+  const meta = document.createElement("span");
+  meta.className = "cuda-support-meta";
+  meta.textContent = `torch ${target.torch} · cần driver ${target.driver} · ${target.arches.join(", ")}`;
+  box.appendChild(meta);
+
+  const list = document.createElement("ul");
+  for (const f of target.families) {
+    const li = document.createElement("li");
+    const name = document.createElement("b");
+    name.textContent = f.name;
+    li.append(name, document.createTextNode(` — ${f.cards}`));
+    list.appendChild(li);
+  }
+  box.appendChild(list);
+}
 
 // ------------------------------------------------------------------ update
 
@@ -331,6 +440,14 @@ function renderDeps(report: DepsReport) {
       `Chưa có ${missing.map((t) => t.label).join(", ")} — cần để tải và chuyển đổi audio.`;
   }
   refreshSeparateButton();
+
+  // Bootstrap reports deps without probing the GPU, so the first table is
+  // built with no capability and carries no verdict. Re-fetch exactly once per
+  // capability change — comparing against what the table was built for, not
+  // against whether anything is supported.
+  if (report.gpu.capability !== cudaTargetsCapability) {
+    void renderCudaTargets($<HTMLSelectElement>("cuda-tag").value, report.gpu.capability);
+  }
 }
 
 // Engines are pip installs into the app's own venv, not standalone downloads,
@@ -641,6 +758,10 @@ function fillSettings(s: Settings) {
   $<HTMLSelectElement>("set-stemformat").value = s.stemFormat;
   $<HTMLSelectElement>("set-mp3").value = String(s.mp3Bitrate);
   $<HTMLSelectElement>("set-cookies").value = s.cookiesFromBrowser;
+  // Only when one was actually chosen: an empty accel means the user has never
+  // picked, and boot() asks the backend to suggest one instead.
+  if (s.accel) $<HTMLSelectElement>("accel-select").value = s.accel;
+  $<HTMLSelectElement>("cuda-tag").value = s.cudaTag;
   $<HTMLInputElement>("set-shifts").value = String(s.shifts);
   $<HTMLInputElement>("set-overlap").value = String(Math.round(s.overlap * 100));
   $<HTMLInputElement>("set-jobs").value = String(s.jobs);
@@ -683,6 +804,8 @@ function collectSettingsFromForm(): Partial<Settings> {
     stemFormat: $<HTMLSelectElement>("set-stemformat").value,
     mp3Bitrate: Number($<HTMLSelectElement>("set-mp3").value),
     cookiesFromBrowser: $<HTMLSelectElement>("set-cookies").value,
+    accel: $<HTMLSelectElement>("accel-select").value,
+    cudaTag: $<HTMLSelectElement>("cuda-tag").value,
     shifts: Number($<HTMLInputElement>("set-shifts").value),
     overlap: Number($<HTMLInputElement>("set-overlap").value) / 100,
     jobs: Number($<HTMLInputElement>("set-jobs").value),
@@ -707,7 +830,8 @@ function wireSettingsAutosave() {
     "#set-outdir, #audio-format, #device-select, #stems-select, #set-stemformat," +
     "#set-mp3, #set-cookies, #set-shifts, #set-overlap, #set-jobs, #set-segment," +
     "#set-rf-seg, #set-rf-overlap, #set-rf-batch, #set-rf-norm, #set-ytdlp," +
-    "#set-ffmpeg, #set-python, #set-demucs, #set-audiosep, #model-select";
+    "#set-ffmpeg, #set-python, #set-demucs, #set-audiosep, #model-select," +
+    "#accel-select, #cuda-tag";
   let timer: number | undefined;
   const save = () => {
     window.clearTimeout(timer);
@@ -721,6 +845,10 @@ function wireSettingsAutosave() {
     if (el instanceof HTMLInputElement && el.type === "range") {
       el.addEventListener("input", syncSliderLabels);
     }
+  });
+  $("cuda-tag").addEventListener("change", () => {
+    refreshInstallEnginesButton();
+    renderCudaSupport();
   });
   $("model-select").addEventListener("change", renderModelNote);
   $("stems-select").addEventListener("change", renderModelNote);
@@ -937,10 +1065,22 @@ async function boot() {
     $("version-badge").textContent = boot.appVersion;
     boot.log.forEach(appendLog);
     $("brand-sub").textContent = `YouTube → ${boot.settings.audioFormat.toUpperCase()} → tách vocal`;
-    wireSettingsAutosave();
 
-    const accel = (await api.SuggestedAccel()) as string;
-    $<HTMLSelectElement>("accel-select").value = accel;
+    // Both selects must hold their real values before autosave is wired.
+    // Wiring first meant any field change in the gap persisted whatever the
+    // DOM happened to hold — cudaTag: "" while the options were still being
+    // fetched, wiping a deliberate cu118/cu130, and accel frozen at the HTML
+    // default "reuse" before the suggestion arrived, which is exactly the
+    // pinned-to-a-broken-torch trap SuggestedAccel exists to avoid.
+    await renderCudaTargets(boot.settings.cudaTag, boot.deps.gpu.capability);
+
+    // A saved choice wins, so a deliberate "Tải bản CUDA (GPU)" is not
+    // replaced by the suggestion on every launch.
+    if (!boot.settings.accel) {
+      $<HTMLSelectElement>("accel-select").value = (await api.SuggestedAccel()) as string;
+    }
+
+    wireSettingsAutosave();
   } catch (e) {
     toast(`Không khởi tạo được: ${errText(e)}`, "error");
   }

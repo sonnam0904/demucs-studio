@@ -43,9 +43,12 @@ func main() {
 		MinWidth:    920,
 		MinHeight:   640,
 		AssetServer: &assetserver.Options{Assets: assets},
-		// This colour is the stylesheet's --bg, so the window paints as the
-		// app's own background from the first frame and the webview fills in
-		// over it. That is what makes StartHidden unnecessary.
+		// Must stay in step with --bg in frontend/src/style.css: it is what the
+		// window paints before the webview has anything to show, so the first
+		// frame is the app's own background rather than white. That is what
+		// makes StartHidden unnecessary — without it the flash below is a white
+		// one.
+		BackgroundColour: &options.RGBA{R: 12, G: 14, B: 20, A: 1},
 		//
 		// StartHidden was used here once, with OnDomReady revealing the window.
 		// It cost us a window that never appeared at all: Wails' Linux backend

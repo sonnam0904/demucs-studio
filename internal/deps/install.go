@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"demucs-studio/internal/netfetch"
@@ -367,8 +368,131 @@ type EngineSpec struct {
 	// "reuse" creates the venv with --system-site-packages and keeps whatever
 	// torch the host Python already has (fast, no multi-GB download).
 	Accel string `json:"accel"`
-	// CudaTag selects the PyTorch wheel index, e.g. "cu124", "cu121".
+	// CudaTag selects the PyTorch wheel index, e.g. "cu126", "cu128".
 	CudaTag string `json:"cudaTag"`
+}
+
+// withResidentEngines adds the engines already installed in the venv to the
+// requested set, so a rebuild does not silently uninstall one of them.
+//
+// The install panel offers a button per missing engine and sends exactly one
+// engine id, so without this a flavour switch performed from the demucs row
+// removed audio-separator and vice versa — leaving the deps tab reporting an
+// engine the user never asked to lose.
+// Takes the resolved tools rather than the Resolver so it stays a pure
+// decision: resolving an engine shells out to it for a version string, which a
+// test has no business doing.
+func withResidentEngines(requested []string, resident map[string]Tool) []string {
+	out := append([]string{}, requested...)
+	// Iterated in a fixed order; ranging a map would shuffle the pip calls
+	// between runs and make the install log non-reproducible.
+	for _, id := range []string{ToolDemucs, ToolAudioSeparator} {
+		tool, ok := resident[id]
+		// Only what lives in the venv is about to be destroyed; an engine on
+		// the system PATH survives and must not be reinstalled into the venv.
+		if !ok || !tool.Found || !strings.HasPrefix(tool.Path, paths.VenvDir()) {
+			continue
+		}
+		if !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// interpreterOutsideVenv finds a Python that does not live in the managed venv,
+// which is what a rebuild has to be driven by.
+//
+// The venv records the interpreter that created it in pyvenv.cfg's `executable`
+// key, and that is the best answer: it is known to be able to build this venv.
+// Failing that — Python upgraded or removed since — fall back to scanning the
+// resolver's candidates and skipping anything inside the venv.
+func interpreterOutsideVenv(r *Resolver, ctx context.Context) ([]string, error) {
+	if exe := venvCreator(); exe != "" && isExecutable(exe) {
+		return []string{exe}, nil
+	}
+	for _, argv := range r.pythonCandidates() {
+		resolved := resolvePython(argv)
+		if len(resolved) == 0 || strings.HasPrefix(resolved[0], paths.VenvDir()) {
+			continue
+		}
+		if v, ok := probeArgv(ctx, resolved, "--version"); ok && looksLikePython3(v) {
+			return resolved, nil
+		}
+	}
+	return nil, errors.New("cần một bản Python 3 ngoài môi trường của app để tạo lại nó — hãy cài Python 3.10+ rồi thử lại")
+}
+
+// venvCreator reads the interpreter path `venv` recorded when it built the
+// managed environment.
+func venvCreator() string {
+	raw, err := os.ReadFile(filepath.Join(paths.VenvDir(), "pyvenv.cfg"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if ok && strings.TrimSpace(key) == "executable" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+// cudaRuntimePrefixes are the distribution-name prefixes PyTorch's own CUDA
+// dependencies use. Everything matching is part of the bundled toolkit and
+// belongs to exactly one CUDA major version.
+var cudaRuntimePrefixes = []string{"nvidia-", "nvidia_", "cuda-", "cuda_"}
+
+// installedCUDARuntime lists the CUDA runtime distributions present in the
+// venv, so a flavour switch can remove the whole set rather than leave halves
+// of two CUDA majors fighting over the same shared-library filenames.
+//
+// pip has no wildcard uninstall, hence reading the list first. A failure here
+// is not fatal: the caller only loses the cleanup, and reinstalling torch on
+// top is still an improvement over doing nothing.
+func installedCUDARuntime(ctx context.Context, venvPy string) []string {
+	out, err := proc.Output(ctx, proc.Options{
+		Bin:  venvPy,
+		Args: []string{"-m", "pip", "list", "--format=freeze"},
+	})
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		name, _, ok := strings.Cut(strings.TrimSpace(line), "==")
+		if !ok {
+			continue
+		}
+		lower := strings.ToLower(name)
+		for _, prefix := range cudaRuntimePrefixes {
+			if strings.HasPrefix(lower, prefix) {
+				names = append(names, name)
+				break
+			}
+		}
+	}
+	return names
+}
+
+// venvSeesSystemPackages reports whether the managed venv was created with
+// --system-site-packages, by reading the flag `venv` records in pyvenv.cfg.
+// A missing or unreadable file reads as false: that is the isolated default,
+// and guessing "true" would skip a rebuild that the caller needs.
+func venvSeesSystemPackages() bool {
+	raw, err := os.ReadFile(filepath.Join(paths.VenvDir(), "pyvenv.cfg"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(key) != "include-system-site-packages" {
+			continue
+		}
+		return strings.EqualFold(strings.TrimSpace(value), "true")
+	}
+	return false
 }
 
 // InstallEngines creates (or reuses) the managed virtual environment and pip
@@ -381,23 +505,65 @@ func InstallEngines(ctx context.Context, r *Resolver, spec EngineSpec, rep Repor
 	if !host.Found {
 		return errors.New("không tìm thấy Python 3. Hãy cài Python 3.10+ rồi thử lại")
 	}
+	// cu126 rather than the cu124 this used to default to: PyTorch stopped
+	// publishing new wheels to the cu124 index, so on Python 3.13 it resolves to
+	// torch 2.6 while cu126 reaches 2.14. Both need only a 12.x driver, so this
+	// costs no compatibility. Newer indexes are not a safe default — cu130 needs
+	// a 580+ driver, and a mismatch there fails at runtime, not at install time.
 	if spec.CudaTag == "" {
-		spec.CudaTag = "cu124"
+		spec.CudaTag = "cu126"
 	}
 	if spec.Accel == "" {
 		spec.Accel = "reuse"
 	}
 
-	// Do not build the venv from an interpreter that already lives in it.
-	// host.Argv may carry arguments (the Windows `py -3` launcher), so the
-	// venv command has to be assembled from the whole prefix.
+	// host.Argv may carry arguments (the Windows `py -3` launcher), so the venv
+	// command has to be assembled from the whole prefix.
 	base := host.Argv
 	if len(base) == 0 {
 		base = []string{host.Path}
 	}
-	if strings.HasPrefix(host.Path, paths.VenvDir()) {
+	inVenv := strings.HasPrefix(host.Path, paths.VenvDir())
+
+	// An explicit flavour needs an isolated venv. With
+	// include-system-site-packages pip counts a torch in the user site as
+	// satisfying the requirement and installs nothing into the venv at all, so
+	// the flavour switch silently does nothing.
+	//
+	// "reuse" deliberately never triggers a rebuild. It used to: a venv built
+	// for an explicit flavour is not system-site, so "reuse" looked like a kind
+	// change and wiped it — and because the reuse path installs no torch, the
+	// working CUDA build was replaced by whatever pip resolved as a dependency,
+	// which is the CPU wheel. Reuse means reuse; if the venv cannot see a host
+	// torch, refuseEmptyReuse below says so instead of degrading silently.
+	needsRebuild := inVenv && spec.Accel != "reuse" && venvSeesSystemPackages()
+
+	if inVenv && !needsRebuild {
 		rep.Log(LevelInfo, "Dùng lại môi trường Python sẵn có của app")
 	} else {
+		if needsRebuild {
+			// Rebuilding destroys every package in the venv, including engines
+			// this call was not asked to install, so they have to be reinstalled
+			// alongside. Collected before the wipe, while they are still visible.
+			spec.Engines = withResidentEngines(spec.Engines, map[string]Tool{
+				ToolDemucs:         r.Demucs(ctx),
+				ToolAudioSeparator: r.AudioSeparator(ctx),
+			})
+			rep.Log(LevelWarn, "Môi trường Python hiện tại không phù hợp với lựa chọn PyTorch — sẽ tạo lại từ đầu.")
+
+			// Removed from Go rather than with `venv --clear`, and recreated by
+			// an interpreter from outside: needsRebuild implies the resolved
+			// host python IS the venv python, so --clear would have asked it to
+			// delete its own executable. Windows refuses outright.
+			outside, err := interpreterOutsideVenv(r, ctx)
+			if err != nil {
+				return err
+			}
+			base = outside
+			if err := os.RemoveAll(paths.VenvDir()); err != nil {
+				return fmt.Errorf("không xoá được môi trường Python cũ: %w", err)
+			}
+		}
 		args := append(append([]string{}, base[1:]...), "-m", "venv")
 		if spec.Accel == "reuse" {
 			args = append(args, "--system-site-packages")
@@ -408,6 +574,15 @@ func InstallEngines(ctx context.Context, r *Resolver, spec EngineSpec, rep Repor
 		if err := stream(ctx, rep, base[0], args...); err != nil {
 			return fmt.Errorf("tạo venv thất bại: %w", err)
 		}
+	}
+
+	// "reuse" installs no torch, so it only works when one is already visible.
+	// Without this check pip resolved torch as a dependency of the engines,
+	// which means the PyPI default — the CPU wheel — and the user ended up on
+	// CPU having chosen the option that promised to keep what they had.
+	if spec.Accel == "reuse" && !canImport(ctx, []string{paths.VenvBin("python")}, "torch") {
+		return errors.New(`chọn "Dùng lại bản đã có" nhưng không thấy PyTorch nào dùng được — ` +
+			`hãy chọn "Tải bản CUDA (GPU)" hoặc "Tải bản CPU"`)
 	}
 
 	venvPy := paths.VenvBin("python")
@@ -431,9 +606,46 @@ func InstallEngines(ctx context.Context, r *Resolver, spec EngineSpec, rep Repor
 		if spec.Accel == "cuda" {
 			index = "https://download.pytorch.org/whl/" + spec.CudaTag
 		}
+		// Remove the family before installing it. pip's --upgrade only ever
+		// moves forward, so switching to an older index — exactly what a
+		// Maxwell or Pascal card needs, since recent CUDA builds dropped those
+		// architectures — was a silent no-op: cu118 tops out at torch 2.6 while
+		// an installed cu130 build is 2.12, so pip answered "already satisfied"
+		// and the user was left on a torch with no kernels for their GPU.
+		//
+		// torchvision and torchcodec go too even though they are not installed
+		// from here: they are compiled against one exact torch, and leaving a
+		// mismatched pair behind breaks the import rather than the install.
+		rep.Step("install", 0.1, "Xoá PyTorch cũ", "")
+		doomed := []string{"torch", "torchaudio", "torchvision", "torchcodec"}
+		// The bundled CUDA runtime has to go with it. Packages like
+		// nvidia-cudnn-cu11 and nvidia-cudnn-cu13 unpack into the *same*
+		// directory (nvidia/cudnn/lib) and overwrite each other's
+		// libcudnn.so.9, so a leftover from another CUDA major silently
+		// shadows the right one. Seen exactly that: torch 2.7.1+cu118 loading
+		// cuDNN 9.24 from an orphaned cu13 package, and every convolution
+		// failing with "GET was unable to find an engine to execute this
+		// computation" — after the GPU had already tested fine, because a
+		// plain elementwise kernel never touches cuDNN.
+		doomed = append(doomed, installedCUDARuntime(ctx, venvPy)...)
+		if err := stream(ctx, rep, venvPy,
+			append([]string{"-m", "pip", "uninstall", "-y"}, doomed...)...); err != nil {
+			// Nothing to remove is the normal first-install case, and pip exits
+			// non-zero on some versions for that. The install below is what
+			// actually has to succeed.
+			rep.Logf(LevelInfo, "Không có PyTorch cũ để xoá (%v)", err)
+		}
+
+		// torchvision belongs in this list even though nothing here imports it.
+		// audio-separator pulls it in transitively (via onnx2torch), and if it
+		// is missing at that point pip resolves it from PyPI, picks the newest
+		// build, and drags that build's matching torch along — silently undoing
+		// the flavour just installed. Observed exactly that: a freshly
+		// installed torch 2.7.1+cu118 replaced by 2.14.0+cu130, leaving the
+		// same "no kernels for this GPU" state the install was meant to fix.
 		rep.Logf(LevelWarn, "Đang tải PyTorch (%s) — có thể vài GB, vui lòng chờ.", spec.Accel)
 		if err := pip(0.15, "Cài PyTorch ("+spec.Accel+")",
-			"--index-url", index, "torch", "torchaudio"); err != nil {
+			"--index-url", index, "torch", "torchaudio", "torchvision"); err != nil {
 			return err
 		}
 	}

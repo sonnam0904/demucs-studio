@@ -21,6 +21,66 @@ export namespace bus {
 
 export namespace deps {
 	
+	export class GPUFamily {
+	    name: string;
+	    cards: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new GPUFamily(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.cards = source["cards"];
+	    }
+	}
+	export class CudaTarget {
+	    tag: string;
+	    torch: string;
+	    driver: string;
+	    minDriver: number;
+	    arches: string[];
+	    families: GPUFamily[];
+	    recommended: boolean;
+	    supported: boolean;
+	    blocker: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CudaTarget(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tag = source["tag"];
+	        this.torch = source["torch"];
+	        this.driver = source["driver"];
+	        this.minDriver = source["minDriver"];
+	        this.arches = source["arches"];
+	        this.families = this.convertValues(source["families"], GPUFamily);
+	        this.recommended = source["recommended"];
+	        this.supported = source["supported"];
+	        this.blocker = source["blocker"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class EngineSpec {
 	    engines: string[];
 	    accel: string;
@@ -42,6 +102,8 @@ export namespace deps {
 	    available: boolean;
 	    name: string;
 	    torch: string;
+	    capability: string;
+	    driver: string;
 	    reason: string;
 	
 	    static createFrom(source: any = {}) {
@@ -54,9 +116,12 @@ export namespace deps {
 	        this.available = source["available"];
 	        this.name = source["name"];
 	        this.torch = source["torch"];
+	        this.capability = source["capability"];
+	        this.driver = source["driver"];
 	        this.reason = source["reason"];
 	    }
 	}
+	
 	export class Tool {
 	    id: string;
 	    label: string;
@@ -318,6 +383,8 @@ export namespace settings {
 	    pythonPath: string;
 	    demucsPath: string;
 	    audioSeparatorPath: string;
+	    accel: string;
+	    cudaTag: string;
 	    audioFormat: string;
 	    cookiesFromBrowser: string;
 	    modelId: string;
@@ -346,6 +413,8 @@ export namespace settings {
 	        this.pythonPath = source["pythonPath"];
 	        this.demucsPath = source["demucsPath"];
 	        this.audioSeparatorPath = source["audioSeparatorPath"];
+	        this.accel = source["accel"];
+	        this.cudaTag = source["cudaTag"];
 	        this.audioFormat = source["audioFormat"];
 	        this.cookiesFromBrowser = source["cookiesFromBrowser"];
 	        this.modelId = source["modelId"];

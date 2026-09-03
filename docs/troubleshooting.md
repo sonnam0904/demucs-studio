@@ -77,8 +77,69 @@ compute capability nó được build cho. Ví dụ GTX 960 là `sm_52`, còn wh
 chỉ có từ `sm_75` trở lên.
 
 App phát hiện việc này **trước khi** tách, nên bạn thấy badge *CPU only* thay vì
-một lần tách chạy giữa đường rồi chết. Muốn dùng GPU thì cài lại engine với phiên
-bản CUDA cũ hơn (thử `cu118` hoặc `cu121` ở ô **CUDA**).
+một lần tách chạy giữa đường rồi chết. Đáng chú ý: `torch.cuda.is_available()`
+vẫn trả về `True` trong trường hợp này — driver hoạt động, chỉ là không có mã máy
+nào chạy được. Vì thế app phóng thử một kernel thật chứ không tin vào cờ đó.
+
+Cách chữa: tab **Phụ thuộc** → PyTorch *Tải bản CUDA (GPU)*. Ô **CUDA** liệt kê
+các dòng card mỗi bản hỗ trợ và **đánh dấu bản phù hợp với máy bạn**, nên chỉ
+việc chọn cái được đánh dấu rồi *Cài engine*.
+
+Bảng arch dưới đây đọc trực tiếp từ wheel bằng `cuobjdump --list-elf`:
+
+| Index | torch | Compute capability có kernel |
+| --- | --- | --- |
+| `cu118` | 2.7.1 | `sm_37 50 60 70 75 80 86 90` |
+| `cu126` | 2.14 | `sm_50 60 70 75 80 86 89 90` |
+| `cu130` | 2.14 | `sm_75 80 86 90 100 120` |
+
+Chỉ `cu130` bỏ Maxwell/Pascal — **`cu126` mặc định vẫn chạy được GTX 9xx/10xx**.
+Đã kiểm chứng end-to-end trên GTX 960 (`sm_52`): tách nhạc chạy trên GPU.
+
+!!! info "Vì sao không có `sm_52` trong bảng mà GTX 960 vẫn chạy"
+
+    Cubin `sm_XY` chạy được trên mọi card **cùng major, minor bằng hoặc cao
+    hơn** — đúng như cảnh báo của torch: *"5.0 which supports hardware CC
+    >=5.0,<6.0"*. Nên `sm_50` phủ cả 5.2. Cùng lý do đó, `sm_86` phủ RTX 40xx
+    (8.9) ở những index không có `sm_89`.
+
+!!! note "Lần cài này lâu hơn bình thường"
+
+    Đổi phiên bản PyTorch là **hạ cấp**, mà `pip --upgrade` không hạ cấp được.
+    Nên app gỡ cả họ `torch`/`torchaudio`/`torchvision` rồi cài lại, và tạo lại
+    môi trường Python nếu kiểu venv hiện tại không phù hợp. Tải lại vài GB.
+
+## Tách chết giữa đường với *GET was unable to find an engine* { #cudnn }
+
+Đây là lỗi **cuDNN**, không phải CUDA. Traceback dừng ở `F.conv1d`, và badge
+trước đó vẫn báo GPU sẵn sàng.
+
+Nguyên nhân: các gói `nvidia-cudnn-cu11`, `nvidia-cudnn-cu13`… giải nén vào
+**cùng một thư mục** `nvidia/cudnn/lib` và **ghi đè `libcudnn.so.9` của nhau**.
+Nên khi đổi phiên bản CUDA mà gói cuDNN của bản cũ còn sót lại, torch nạp đúng
+file sai:
+
+```
+torch 2.7.1+cu118   cần cuDNN cu11 9.1.0
+torch.backends.cudnn.version()  →  92400   ← của cu13, sai
+```
+
+Phép cộng elementwise vẫn chạy vì nó **không đi qua cuDNN** — chỉ có convolution
+mới chết, tức là chết đúng lúc đang tách.
+
+Bản mới xử lý cả hai mặt: khi đổi phiên bản PyTorch, app gỡ **toàn bộ** runtime
+CUDA (`nvidia-*`, `cuda-*`) chứ không chỉ mấy gói `torch*`; và probe GPU chạy
+thêm **một convolution thật** nên phát hiện được trước khi bạn bấm Tách.
+
+Nếu đang mắc, sửa tay:
+
+```bash
+PY=~/.local/share/demucs-studio/pyenv/bin/python
+$PY -m pip list | grep -i cudnn        # xem có mấy bản
+$PY -c "import torch; print(torch.backends.cudnn.version())"
+```
+
+Có nhiều hơn một gói `nvidia-cudnn-*` thì cài lại engine để app dọn sạch.
 
 ## GPU báo hết VRAM { #vram }
 
@@ -133,6 +194,24 @@ Xem ô **Nhật ký** — toàn bộ output của `pip` hiện ở đó. Vài ng
 
 Muốn làm lại từ đầu: xoá thư mục `pyenv/` trong
 [thư mục dữ liệu](installation.md#thu-muc-du-lieu) rồi cài lại.
+
+## Bấm *Mở thư mục kết quả* không thấy gì (Windows)
+
+Xảy ra với bản **1.1.0 và cũ hơn**. App gọi
+`rundll32 url.dll,FileProtocolHandler` để mở thư mục; entry point đó nhận nguyên
+phần còn lại của dòng lệnh **kèm cả dấu nháy**, mà mọi thư mục kết quả đều có
+dấu cách trong tên bài hát nên Go phải nháy nó lại — đường dẫn tới tay Windows ở
+dạng không dùng được.
+
+Tệ hơn: app chỉ kiểm tra tiến trình con **khởi động** được hay không, nên khi nó
+thất bại sau đó thì cú bấm vừa không mở gì vừa không báo gì.
+
+Bản mới dùng `explorer.exe` (cách Microsoft khuyến nghị cho việc mở thư mục, và
+nó nhận tham số như một chương trình bình thường), đồng thời ghi vào **Nhật ký**
+lệnh đã chạy để lần sau còn chẩn đoán được.
+
+Chưa cập nhật được thì mở tay: thư mục kết quả nằm ở
+`%USERPROFILE%\Music\DemucsStudio\stems\<tên bài>\<model>\`.
 
 ## Kết quả tách có lẫn file của lần chạy trước
 

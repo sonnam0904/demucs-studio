@@ -500,6 +500,64 @@ input[type="checkbox"] {
   flex-wrap: wrap;
 }
 
+/* Which cards the selected CUDA index can drive. Sits directly under the
+   install grid because it changes with the CUDA dropdown above it. */
+.cuda-support {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-left: 2px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+/* The verdict for this machine's own card, which is the line a user actually
+   reads. Green when the pick fits, amber when it does not. */
+.cuda-support.is-good {
+  border-left-color: var(--good);
+}
+
+.cuda-support.is-warn {
+  border-left-color: var(--warn);
+}
+
+.cuda-support-verdict {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.cuda-support.is-good .cuda-support-verdict {
+  color: var(--good);
+}
+
+.cuda-support.is-warn .cuda-support-verdict {
+  color: var(--warn);
+}
+
+.cuda-support-meta {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-faint);
+}
+
+.cuda-support ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.cuda-support li + li {
+  margin-top: 2px;
+}
+
+.cuda-support li b {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .check-row {
   display: flex;
   gap: 16px;

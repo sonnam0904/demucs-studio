@@ -26,6 +26,10 @@ export function ClearLog() {
   return window['go']['main']['App']['ClearLog']();
 }
 
+export function CudaTargets() {
+  return window['go']['main']['App']['CudaTargets']();
+}
+
 export function Download(arg1) {
   return window['go']['main']['App']['Download'](arg1);
 }

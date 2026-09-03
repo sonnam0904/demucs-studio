@@ -151,14 +151,64 @@ Chọn bản PyTorch phù hợp với máy:
 
 | Chọn | Khi nào |
 | --- | --- |
-| **Tải bản CUDA (GPU)** + CUDA `cu124` | Có GPU NVIDIA — gần như bắt buộc nếu muốn dùng RoFormer |
+| **Tải bản CUDA (GPU)** + CUDA `cu126` | Có GPU NVIDIA — gần như bắt buộc nếu muốn dùng RoFormer |
 | **Tải bản CPU** | Không có GPU NVIDIA |
-| **Dùng lại bản đã có** | Máy đã cài sẵn PyTorch đúng loại |
+| **Dùng lại bản đã có** | Python **hệ thống** đã có PyTorch đúng loại |
+
+Ô **CUDA** liệt kê các dòng card mỗi bản hỗ trợ và đánh dấu ✓/✗ theo đúng card
+trong máy bạn, kèm lý do khi không khớp (thiếu kernel, hay driver quá cũ). Chỉ
+còn ba lựa chọn — `cu126`, `cu130`, `cu118` — vì `cu121`/`cu124`/`cu128` không
+còn nhận bản torch mới và `cu126` phủ hết số card của chúng; cấu hình cũ lưu một
+trong ba tag đó sẽ được chuyển về `cu126`.
+
+!!! note "*Dùng lại bản đã có* chỉ nói về Python hệ thống"
+
+    Nó **không cài torch nào**, chỉ cho môi trường của app thấy các package hệ
+    thống. Nếu không tìm thấy PyTorch dùng được ở đó, app **báo lỗi và dừng**
+    thay vì để pip tự kéo về bản CPU — đó là cách người dùng từng âm thầm mất
+    bản GPU đang chạy tốt.
 
 !!! warning "Trên macOS đừng chọn bản CUDA"
 
     Mac không có CUDA — kể cả máy Intel đời cũ từng gắn card rời. Chọn **Tải bản
     CPU**; PyTorch sẽ chạy bằng CPU hoặc MPS tuỳ engine.
+
+!!! danger "GPU đời cũ: *sm_XX không nằm trong các kiến trúc torch hỗ trợ*"
+
+    Card Maxwell (GTX 9xx) và Pascal (GTX 10xx) đã bị các bản PyTorch CUDA mới
+    **bỏ hẳn kernel**. Bản `cu130` chẳng hạn chỉ còn `sm_75` trở lên, trong khi
+    GTX 960 là `sm_52`.
+
+    Bẫy ở đây: `torch.cuda.is_available()` vẫn trả về **True** — driver hoạt
+    động bình thường, chỉ là không có mã máy nào chạy được. Tin vào nó thì app
+    sẽ chọn GPU rồi chết giữa chừng với *"no kernel image is available"*. Đó là
+    lý do app chạy thử một kernel thật thay vì chỉ hỏi `is_available()`.
+
+    Cách chữa: đổi sang một bản CUDA còn kernel cho card của bạn. **Ô CUDA
+    trong app liệt kê sẵn các dòng card mà mỗi bản hỗ trợ, và đánh dấu bản phù
+    hợp với máy bạn** — không cần tra bảng.
+
+    Chỉ `cu130` mới bỏ Maxwell/Pascal; **`cu126` (mặc định) vẫn còn `sm_50`**,
+    nên card cũ thường chỉ cần quay về mặc định. Đã kiểm chứng end-to-end trên
+    một GTX 960 thật (`sm_52`): tách nhạc chạy trên GPU.
+
+    App sẽ **tự tạo lại môi trường Python** khi lựa chọn PyTorch không khớp kiểu
+    venv hiện có, nên lần cài này lâu hơn bình thường (tải lại vài GB).
+
+!!! danger "Có card NVIDIA mà badge vẫn báo *CPU only*"
+
+    Gần như luôn là do torch trong venv của app là **bản CPU-only**. Kiểm tra:
+
+    ```powershell
+    & "$env:APPDATA\DemucsStudio\pyenv\Scripts\python.exe" -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+    ```
+
+    Ra dạng `2.13.0+cpu None False` là đúng bệnh. Thoát bằng cách chọn **tay**
+    *Tải bản CUDA (GPU)* rồi cài lại engine — bản torch CPU cũng báo version như
+    bản CUDA, nên tuyệt đối đừng để nguyên *Dùng lại bản đã có*.
+
+    Chọn `cuXXX` khớp với dòng **CUDA Version** mà `nvidia-smi` in ra. Driver
+    12.6 thì dùng `cu126`; `cu130` cần driver từ 580 trở lên.
 
 Rồi tích engine muốn dùng và bấm *Cài engine*:
 
@@ -176,7 +226,7 @@ Python hệ thống**. Theo dõi tiến độ ở khung *Nhật ký* dưới cù
 !!! info "Vì sao app không để pip tự chọn torch"
 
     Trên Windows, `pip install torch` từ PyPI mặc định ra **bản CPU**. Nên app luôn
-    cài torch từ index riêng của PyTorch (`download.pytorch.org/whl/cu124`) — nếu
+    cài torch từ index riêng của PyTorch (`download.pytorch.org/whl/cu126`) — nếu
     không, bạn sẽ có GPU nhưng vẫn chạy bằng CPU mà không biết.
 
 ---

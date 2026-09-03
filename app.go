@@ -224,6 +224,23 @@ func (a *App) UpdateYtDlp() error {
 	})
 }
 
+// CudaTargets lists the selectable PyTorch CUDA indexes, each with the card
+// generations it can drive and whether it fits the GPU in this machine.
+//
+// The card list is not decoration: a wheel only carries machine code for the
+// compute capabilities it was built for, and the sets differ enough between
+// indexes that the wrong pick yields a torch which imports, reports CUDA as
+// available, and then has no kernel to run.
+// It reads the cached probe result rather than triggering one: the frontend
+// calls this while laying out the install panel, and DetectGPU imports torch,
+// which would put seconds on the startup path — and race the warm-up goroutine
+// into a second concurrent torch import. Before the probe has answered every
+// entry simply carries no verdict, and the UI re-asks when app:deps arrives.
+func (a *App) CudaTargets() []deps.CudaTarget {
+	g := a.resolver.CachedGPU()
+	return deps.CudaTargetsFor(g.Capability, g.Driver)
+}
+
 // --- self-update ------------------------------------------------------------
 
 // CheckUpdate asks GitHub whether a newer release exists. The UI calls it once
@@ -273,11 +290,18 @@ func (a *App) ApplyUpdate() error {
 }
 
 // SuggestedAccel tells the UI which torch flavour to preselect: reuse an
-// existing torch when the host Python already has one, else GPU if an NVIDIA
+// existing torch when there is one that actually works, else GPU if an NVIDIA
 // driver looks present, else CPU.
+//
+// Two conditions, and both matter. The torch has to actually work — a CPU-only
+// one reports a version just like a CUDA one, so keying off mere presence made
+// this a trap where a machine with an NVIDIA card stayed pinned to CPU through
+// any number of reinstalls. And it has to live *outside* the managed venv,
+// because that is all "reuse" can reuse: suggesting it for the app's own venv
+// torch pointed the user at an install path that installs no torch at all.
 func (a *App) SuggestedAccel() string {
 	ctx := a.context()
-	if g := a.resolver.DetectGPU(ctx); g.Checked && g.Torch != "" {
+	if a.resolver.DetectGPU(ctx).Available && a.resolver.TorchOutsideVenv(ctx) {
 		return "reuse"
 	}
 	if _, err := exec.LookPath("nvidia-smi"); err == nil {
@@ -520,19 +544,22 @@ func (a *App) OpenPath(target string) error {
 	if _, err := os.Stat(target); err != nil {
 		return fmt.Errorf("không tồn tại: %s", target)
 	}
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
-	case "darwin":
-		cmd = exec.Command("open", target)
-	default:
-		cmd = exec.Command("xdg-open", target)
-	}
+	cmd := shellOpen(target)
+	a.bus.Logf(bus.LevelDebug, "Mở %s: %s", target, strings.Join(cmd.Args, " "))
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	go func() { _ = cmd.Wait() }()
+	// Start succeeding only means the helper launched. Whether it then found
+	// the path is reported by its exit status, and discarding that is what made
+	// the previous Windows bug invisible: the click did nothing and said
+	// nothing. Waiting here would block the UI thread, so the status is logged
+	// from a goroutine instead.
+	go func() {
+		err := cmd.Wait()
+		if err != nil && shellOpenReportsExit {
+			a.bus.Logf(bus.LevelWarn, "Không mở được %s: %v", target, err)
+		}
+	}()
 	return nil
 }
 

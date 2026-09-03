@@ -23,6 +23,13 @@ type Settings struct {
 	DemucsPath         string `json:"demucsPath"`
 	AudioSeparatorPath string `json:"audioSeparatorPath"`
 
+	// Engine install choices, remembered so reopening the app does not silently
+	// reset them. Accel empty means "never chosen", which is what lets the UI
+	// fall back to App.SuggestedAccel for a first-time user without overriding
+	// a deliberate choice afterwards.
+	Accel   string `json:"accel"`   // "", reuse | cuda | cpu
+	CudaTag string `json:"cudaTag"` // cu118 | cu121 | cu124 | cu126 | cu128 | cu130
+
 	// Download options.
 	AudioFormat        string `json:"audioFormat"`        // wav | flac | mp3
 	CookiesFromBrowser string `json:"cookiesFromBrowser"` // "", chrome, firefox, edge, ...
@@ -54,7 +61,10 @@ func Defaults() Settings {
 		jobs = 4
 	}
 	return Settings{
-		OutputDir:           paths.DefaultOutputDir(),
+		OutputDir: paths.DefaultOutputDir(),
+		// Accel is deliberately left empty: no default beats asking
+		// SuggestedAccel what this particular machine should use.
+		CudaTag:             "cu126",
 		AudioFormat:         "wav",
 		ModelID:             "demucs:htdemucs_ft",
 		Device:              "auto",
@@ -136,6 +146,19 @@ func (s *Store) normalizeLocked() {
 	}
 	if !oneOf(s.data.Device, "auto", "cuda", "cpu") {
 		s.data.Device = d.Device
+	}
+	// "" is valid for Accel and means "not chosen yet"; anything else must be a
+	// flavour InstallEngines understands.
+	if s.data.Accel != "" && !oneOf(s.data.Accel, "reuse", "cuda", "cpu") {
+		s.data.Accel = d.Accel
+	}
+	// Only the indexes the install panel still offers. A tag that was valid in
+	// an older build — cu121, cu124, cu128 — is migrated to the default rather
+	// than kept: the dropdown has no matching option for it, so keeping it left
+	// the select blank and the displayed choice disagreeing with the installed
+	// one. cu126 covers every card those three did.
+	if !oneOf(s.data.CudaTag, "cu118", "cu126", "cu130") {
+		s.data.CudaTag = d.CudaTag
 	}
 	if s.data.ModelID == "" {
 		s.data.ModelID = d.ModelID

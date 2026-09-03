@@ -9,6 +9,8 @@ export interface Settings {
   pythonPath: string;
   demucsPath: string;
   audioSeparatorPath: string;
+  accel: string;
+  cudaTag: string;
   audioFormat: string;
   cookiesFromBrowser: string;
   modelId: string;
@@ -39,11 +41,37 @@ export interface Tool {
   canInstall: boolean;
 }
 
+export interface GPUFamily {
+  name: string;
+  cards: string;
+}
+
+export interface CudaTarget {
+  tag: string;
+  torch: string;
+  driver: string;
+  minDriver: number;
+  arches: string[];
+  families: GPUFamily[];
+  recommended: boolean;
+  // Whether this index can drive the GPU in this machine. False also when the
+  // capability is unknown, so it never claims an unverified fit — and `blocker`
+  // then says which requirement failed, empty when the answer is not known.
+  supported: boolean;
+  blocker: string;
+}
+
 export interface GPU {
   checked: boolean;
   available: boolean;
   name: string;
   torch: string;
+  // CUDA compute capability ("5.2") and driver version ("580.173.02"). Both
+  // present even before an engine is installed, and even when the installed
+  // torch is CPU-only: the backend falls back to nvidia-smi. Empty means
+  // genuinely unknown, never a placeholder like "[Not Supported]".
+  capability: string;
+  driver: string;
   reason: string;
 }
 
