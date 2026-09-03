@@ -1,3 +1,10 @@
+# [1.2.0](https://github.com/sonnam0904/demucs-studio/compare/v1.1.1...v1.2.0) (2026-09-03)
+
+
+### Features
+
+* Add CUDA target selection and GPU support verification ([f4f747f](https://github.com/sonnam0904/demucs-studio/commit/f4f747f4e2585618a6fe5aca720427bb4d39bc1c))
+
 ## [1.1.1](https://github.com/sonnam0904/demucs-studio/compare/v1.1.0...v1.1.1) (2026-08-28)
 
 
