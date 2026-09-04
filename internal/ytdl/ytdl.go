@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"demucs-studio/internal/paths"
 	"demucs-studio/internal/proc"
@@ -59,6 +60,25 @@ type Options struct {
 	// YouTube requires solving a JavaScript challenge to obtain playable media
 	// URLs; without a runtime yt-dlp drops formats and downloads fail with 403.
 	JSRuntime string
+	// FilenameBase names the output file instead of yt-dlp's
+	// "%(title)s [%(id)s]" template. Needed when URL is a direct CDN link
+	// resolved elsewhere (Suno), where yt-dlp's own title is a bare UUID.
+	FilenameBase string
+	// Source names the site the URL came from, for progress labels. It also
+	// gates the "yt-dlp is stale" advice, which is about YouTube's defences and
+	// only misleads when the failure came from somewhere else. Empty means
+	// YouTube.
+	Source string
+}
+
+// SourceYouTube is the default value of Options.Source.
+const SourceYouTube = "YouTube"
+
+func (o Options) source() string {
+	if s := strings.TrimSpace(o.Source); s != "" {
+		return s
+	}
+	return SourceYouTube
 }
 
 // validateURL rejects anything that is not an http(s) URL.
@@ -114,7 +134,13 @@ var staleSignatures = []string{
 }
 
 // explainFailure turns an opaque yt-dlp exit into something the user can act on.
-func explainFailure(runErr error, stderr []string, hasJSRuntime bool) error {
+//
+// The advice is YouTube-specific, so a download from anywhere else gets the raw
+// error rather than a confident pointer at the wrong cause.
+func explainFailure(runErr error, stderr []string, hasJSRuntime bool, source string) error {
+	if source != "" && source != SourceYouTube {
+		return runErr
+	}
 	joined := strings.ToLower(strings.Join(stderr, "\n"))
 	matched := ""
 	for _, sig := range staleSignatures {
@@ -174,7 +200,7 @@ func FetchInfo(ctx context.Context, o Options, r Reporter) (Info, error) {
 	})
 	if err != nil {
 		wrapped := fmt.Errorf("không đọc được thông tin video: %w", err)
-		return Info{}, explainFailure(wrapped, stderr, o.JSRuntime != "")
+		return Info{}, explainFailure(wrapped, stderr, o.JSRuntime != "", o.source())
 	}
 
 	var raw struct {
@@ -252,7 +278,7 @@ func Download(ctx context.Context, o Options, r Reporter) (Track, error) {
 		"--ffmpeg-location", o.FfmpegDir,
 		// Normalise to 44.1 kHz stereo so both engines see consistent input.
 		"--postprocessor-args", "ExtractAudio:-ac 2 -ar 44100",
-		"-o", filepath.Join(o.OutDir, "%(title).120B [%(id)s].%(ext)s"),
+		"-o", outputTemplate(o),
 		"--print-to-file", "after_move:filepath", pathFile.Name(),
 		// Without this, re-running the same URL skips post-processing, so
 		// nothing is written to the path file and we cannot tell the caller
@@ -263,7 +289,7 @@ func Download(ctx context.Context, o Options, r Reporter) (Track, error) {
 	args = append(args, "--", target)
 
 	r.Logf("info", "yt-dlp %s", strings.Join(args, " "))
-	r.Step("download", -1, "Đang kết nối YouTube", "")
+	r.Step("download", -1, "Đang kết nối "+o.source(), "")
 
 	converting := false
 	var stderr []string
@@ -296,7 +322,7 @@ func Download(ctx context.Context, o Options, r Reporter) (Track, error) {
 		},
 	})
 	if runErr != nil {
-		return Track{}, explainFailure(runErr, stderr, o.JSRuntime != "")
+		return Track{}, explainFailure(runErr, stderr, o.JSRuntime != "", o.source())
 	}
 
 	finalPath, err := readPathFile(pathFile.Name())
@@ -316,6 +342,50 @@ func Download(ctx context.Context, o Options, r Reporter) (Track, error) {
 		Format:    strings.TrimPrefix(strings.ToLower(filepath.Ext(finalPath)), "."),
 		SizeBytes: st.Size(),
 	}, nil
+}
+
+// outputTemplate builds the -o value. yt-dlp's own title is the right name for
+// a real extractor, but a direct CDN link only ever yields the filename, so
+// callers that already know the title supply it as FilenameBase.
+func outputTemplate(o Options) string {
+	base := sanitizeFilename(o.FilenameBase)
+	if base == "" {
+		return filepath.Join(o.OutDir, "%(title).120B [%(id)s].%(ext)s")
+	}
+	return filepath.Join(o.OutDir, base+".%(ext)s")
+}
+
+// sanitizeFilename turns a title into a filename that is legal on every
+// platform we ship to and inert as a yt-dlp output template.
+func sanitizeFilename(s string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		// The Windows-reserved set, plus separators, plus control characters —
+		// which a Suno title can carry, since its titles are free text.
+		if r < 0x20 || strings.ContainsRune(`<>:"/\|?*`, r) {
+			return '_'
+		}
+		return r
+	}, s)
+	// Trailing dots and spaces are silently dropped by Windows, which would
+	// leave the extension welded onto the name.
+	cleaned = strings.Trim(strings.TrimSpace(cleaned), " .")
+	cleaned = truncateBytes(cleaned, 120)
+	// Escape only after truncating, so the cut cannot land inside a "%%" pair
+	// and resurrect a template field.
+	return strings.ReplaceAll(cleaned, "%", "%%")
+}
+
+// truncateBytes cuts s to at most n bytes without splitting a rune, matching
+// the "%(title).120B" limit used for the default template.
+func truncateBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return strings.TrimRight(s[:cut], " .")
 }
 
 // readPathFile reads the final media path yt-dlp recorded. yt-dlp appends one

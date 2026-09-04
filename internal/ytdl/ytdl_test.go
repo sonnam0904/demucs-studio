@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestParseProgress(t *testing.T) {
@@ -163,7 +164,7 @@ func TestExplainFailure(t *testing.T) {
 	// The 403 the user actually hit: yt-dlp too old for YouTube's defences.
 	err := explainFailure(base, []string{
 		"ERROR: unable to download video data: HTTP Error 403: Forbidden",
-	}, true)
+	}, true, SourceYouTube)
 	if !errors.Is(err, base) {
 		t.Error("explainFailure must wrap the original error")
 	}
@@ -175,15 +176,73 @@ func TestExplainFailure(t *testing.T) {
 	}
 
 	// Same failure with no runtime installed should also say so.
-	err = explainFailure(base, []string{"po token which was not provided"}, false)
+	err = explainFailure(base, []string{"po token which was not provided"}, false, SourceYouTube)
 	if !strings.Contains(err.Error(), "JS runtime") {
 		t.Errorf("expected the missing-runtime hint, got %q", err.Error())
 	}
 
 	// An unrelated failure must pass through untouched, so we do not blame
 	// yt-dlp's version for e.g. a full disk.
-	err = explainFailure(base, []string{"ERROR: No space left on device"}, true)
+	err = explainFailure(base, []string{"ERROR: No space left on device"}, true, SourceYouTube)
 	if err.Error() != base.Error() {
 		t.Errorf("unrelated failure was rewritten: %q", err.Error())
+	}
+}
+
+// The stale-yt-dlp advice is about YouTube's defences. A 403 from a CDN that a
+// non-YouTube resolver pointed us at means something else entirely, and telling
+// the user to update yt-dlp would send them down the wrong path.
+func TestExplainFailureOnlyAdvisesForYouTube(t *testing.T) {
+	base := errors.New("yt-dlp failed: exit status 1")
+	err := explainFailure(base, []string{"ERROR: HTTP Error 403: Forbidden"}, true, "Suno")
+	if err.Error() != base.Error() {
+		t.Errorf("non-YouTube failure was rewritten: %q", err.Error())
+	}
+}
+
+func TestOutputTemplate(t *testing.T) {
+	// With no title supplied, yt-dlp names the file from its own metadata.
+	got := outputTemplate(Options{OutDir: "/out"})
+	if want := filepath.Join("/out", "%(title).120B [%(id)s].%(ext)s"); got != want {
+		t.Errorf("default template = %q, want %q", got, want)
+	}
+
+	tests := []struct {
+		name string
+		base string
+		want string
+	}{
+		{"plain", "E LÀ KHÔNG THỂ", "E LÀ KHÔNG THỂ.%(ext)s"},
+		// Separators and the Windows-reserved set would either escape OutDir or
+		// make the file unwritable on Windows.
+		{"illegal characters", `a/b\c:d*e?f"g<h>i|j`, "a_b_c_d_e_f_g_h_i_j.%(ext)s"},
+		// A bare % would be read by yt-dlp as the start of a template field.
+		{"percent is escaped", "100% Love", "100%% Love.%(ext)s"},
+		{"trailing dots and spaces", "  song ... ", "song.%(ext)s"},
+		{"control characters", "a\nb", "a_b.%(ext)s"},
+		// Blank after cleaning must fall back rather than yield ".%(ext)s".
+		{"nothing left", " . ", "%(title).120B [%(id)s].%(ext)s"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := outputTemplate(Options{OutDir: "/out", FilenameBase: tc.base})
+			if want := filepath.Join("/out", tc.want); got != want {
+				t.Errorf("got %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// A long multi-byte title must be cut on a rune boundary, or the filename ends
+// in a broken UTF-8 sequence.
+func TestOutputTemplateTruncatesOnRuneBoundary(t *testing.T) {
+	long := strings.Repeat("ổ", 200) // 3 bytes each
+	got := outputTemplate(Options{OutDir: "/out", FilenameBase: long})
+	base := strings.TrimSuffix(filepath.Base(got), ".%(ext)s")
+	if len(base) > 120 {
+		t.Errorf("base is %d bytes, want <= 120", len(base))
+	}
+	if !utf8.ValidString(base) {
+		t.Errorf("truncation split a rune: %q", base)
 	}
 }

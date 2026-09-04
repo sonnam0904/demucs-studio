@@ -1,6 +1,6 @@
 # DemucsStudio
 
-**Dán link YouTube → tải nhạc về máy → tách riêng giọng hát và nhạc nền.**
+**Dán link YouTube hoặc Suno → tải nhạc về máy → tách riêng giọng hát và nhạc nền.**
 
 Ứng dụng desktop cho Linux và Windows. Mọi thứ xử lý ngay trên máy bạn: không
 cần tài khoản, không upload file đi đâu, và sau lần tải model đầu tiên thì việc

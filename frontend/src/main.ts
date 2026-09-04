@@ -1014,7 +1014,7 @@ function renderAbout(boot: Bootstrap) {
 function wireActions() {
   $("btn-info").onclick = async () => {
     const url = $<HTMLInputElement>("url").value.trim();
-    if (!url) return toast("Hãy dán URL YouTube trước.", "error");
+    if (!url) return toast("Hãy dán link YouTube hoặc Suno trước.", "error");
     try {
       const info = await api.FetchInfo(url);
       toast(`${info.title} — ${clock(info.duration)}`, "good");
@@ -1040,7 +1040,7 @@ function wireActions() {
 
   $("btn-download").onclick = async () => {
     const url = $<HTMLInputElement>("url").value.trim();
-    if (!url) return toast("Hãy dán URL YouTube trước.", "error");
+    if (!url) return toast("Hãy dán link YouTube hoặc Suno trước.", "error");
     $("result-card").classList.add("hidden");
     renumberSteps();
     try {
@@ -1249,7 +1249,7 @@ async function boot() {
     // the running version even when the check below never answers.
     $("version-badge").textContent = boot.appVersion;
     boot.log.forEach(appendLog);
-    $("brand-sub").textContent = `YouTube → ${boot.settings.audioFormat.toUpperCase()} → tách vocal`;
+    $("brand-sub").textContent = `YouTube · Suno → ${boot.settings.audioFormat.toUpperCase()} → tách vocal`;
 
     // Both selects must hold their real values before autosave is wired.
     // Wiring first meant any field change in the gap persisted whatever the

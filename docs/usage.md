@@ -13,6 +13,9 @@ Tab **Tách nhạc**, ô đầu tiên. Hai cách:
 
 - **Dán link YouTube** → bấm *Tải WAV*. Muốn xem trước tên bài và thời lượng thì
   bấm *Xem thông tin* trước.
+- **Dán link Suno** (`https://suno.com/song/…`) → cũng bấm *Tải WAV*. yt-dlp
+  không hỗ trợ suno.com, nên app tự đọc trang bài hát để lấy link media rồi mới
+  giao cho yt-dlp tải. Bài phải đang ở chế độ công khai.
 - **Chọn file có sẵn trên máy** — bỏ qua hẳn bước tải.
 
 Tải xong, bài hát hiện ra kèm ảnh bìa, tiêu đề và một player để nghe thử.

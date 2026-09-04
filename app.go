@@ -25,6 +25,7 @@ import (
 	"demucs-studio/internal/paths"
 	"demucs-studio/internal/selfupdate"
 	"demucs-studio/internal/settings"
+	"demucs-studio/internal/suno"
 	"demucs-studio/internal/ytdl"
 )
 
@@ -389,30 +390,53 @@ func (a *App) SuggestedAccel() string {
 	return "cpu"
 }
 
-// --- YouTube ---------------------------------------------------------------
+// --- YouTube / Suno ---------------------------------------------------------
 
 func (a *App) FetchInfo(url string) (ytdl.Info, error) {
 	ctx := a.context()
-	tool := a.resolver.YtDlp(ctx)
-	if !tool.Found {
-		return ytdl.Info{}, errors.New("chưa có yt-dlp. Mở tab Phụ thuộc để cài")
-	}
-	set := a.settings.Get()
 	a.bus.Progress(bus.Progress{Phase: "info", Percent: -1, Label: "Đang đọc thông tin video"})
 	defer a.bus.Idle()
 
-	info, err := ytdl.FetchInfo(ctx, ytdl.Options{
-		YtDlp:              tool.Path,
-		URL:                url,
-		CookiesFromBrowser: set.CookiesFromBrowser,
-		JSRuntime:          a.resolver.JSRuntimeSpec(ctx),
-	}, a.reporter())
+	var (
+		info ytdl.Info
+		err  error
+	)
+	if suno.IsURL(url) {
+		var song suno.Song
+		if song, err = suno.Resolve(ctx, url); err == nil {
+			info = sunoInfo(song)
+		}
+	} else {
+		tool := a.resolver.YtDlp(ctx)
+		if !tool.Found {
+			return ytdl.Info{}, errors.New("chưa có yt-dlp. Mở tab Phụ thuộc để cài")
+		}
+		set := a.settings.Get()
+		info, err = ytdl.FetchInfo(ctx, ytdl.Options{
+			YtDlp:              tool.Path,
+			URL:                url,
+			CookiesFromBrowser: set.CookiesFromBrowser,
+			JSRuntime:          a.resolver.JSRuntimeSpec(ctx),
+		}, a.reporter())
+	}
 	if err != nil {
 		a.bus.Logf(bus.LevelError, "%v", err)
 		return ytdl.Info{}, err
 	}
 	a.bus.Logf(bus.LevelInfo, "%s — %s (%s)", info.Title, info.Uploader, formatDuration(info.Duration))
 	return info, nil
+}
+
+// sunoInfo maps a resolved Suno song onto the shape the UI already renders.
+func sunoInfo(song suno.Song) ytdl.Info {
+	return ytdl.Info{
+		ID:         song.ID,
+		Title:      song.Title,
+		Uploader:   song.Uploader,
+		Duration:   song.Duration,
+		Thumbnail:  song.Thumbnail,
+		WebpageURL: song.WebpageURL,
+	}
 }
 
 // Download fetches the URL's audio and returns the local file.
@@ -425,32 +449,56 @@ func (a *App) Download(url string) (ytdl.Track, error) {
 		}
 		ffmpegDir := a.resolver.FFmpegDir(ctx)
 		set := a.settings.Get()
-
-		// Best-effort metadata first, so the card can show a title even if the
-		// filename gets mangled.
 		jsRuntime := a.resolver.JSRuntimeSpec(ctx)
-		info, infoErr := ytdl.FetchInfo(ctx, ytdl.Options{
-			YtDlp:              tool.Path,
-			URL:                url,
-			CookiesFromBrowser: set.CookiesFromBrowser,
-			JSRuntime:          jsRuntime,
-		}, a.reporter())
-		if infoErr != nil {
-			a.bus.Logf(bus.LevelWarn, "Không đọc được metadata: %v", infoErr)
-		} else if info.IsLive {
-			return errors.New("đây là livestream đang phát; không thể tải thành file audio")
+
+		// What yt-dlp is actually pointed at. For Suno that is not the link the
+		// user pasted: yt-dlp refuses suno.com by name, so the page is resolved
+		// here to a direct CDN URL first.
+		source := ytdl.SourceYouTube
+		fetchURL := url
+		filenameBase := ""
+
+		var info ytdl.Info
+		if suno.IsURL(url) {
+			source = "Suno"
+			a.bus.Progress(bus.Progress{Phase: "download", Percent: -1, Label: "Đang đọc trang Suno"})
+			song, err := suno.Resolve(ctx, url)
+			if err != nil {
+				return err
+			}
+			info = sunoInfo(song)
+			fetchURL = song.MediaURL
+			filenameBase = song.Title
+			a.bus.Logf(bus.LevelInfo, "Suno: %s — %s", info.Title, info.Uploader)
+		} else {
+			// Best-effort metadata first, so the card can show a title even if
+			// the filename gets mangled.
+			got, infoErr := ytdl.FetchInfo(ctx, ytdl.Options{
+				YtDlp:              tool.Path,
+				URL:                url,
+				CookiesFromBrowser: set.CookiesFromBrowser,
+				JSRuntime:          jsRuntime,
+			}, a.reporter())
+			if infoErr != nil {
+				a.bus.Logf(bus.LevelWarn, "Không đọc được metadata: %v", infoErr)
+			} else if got.IsLive {
+				return errors.New("đây là livestream đang phát; không thể tải thành file audio")
+			}
+			info = got
 		}
 
 		outDir := filepath.Join(set.OutputDir, "downloads")
 		got, err := ytdl.Download(ctx, ytdl.Options{
 			YtDlp:              tool.Path,
 			FfmpegDir:          ffmpegDir,
-			URL:                url,
+			URL:                fetchURL,
 			OutDir:             outDir,
 			Format:             set.AudioFormat,
 			Mp3Bitrate:         set.Mp3Bitrate,
 			CookiesFromBrowser: set.CookiesFromBrowser,
 			JSRuntime:          jsRuntime,
+			FilenameBase:       filenameBase,
+			Source:             source,
 		}, a.reporter())
 		if err != nil {
 			return err

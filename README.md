@@ -8,7 +8,7 @@
 
 **Tách giọng hát khỏi nhạc nền, ngay trên máy bạn**
 
-Dán link YouTube → tải nhạc về → tách riêng vocal và beat bằng Demucs v4 hoặc BS‑RoFormer.  
+Dán link YouTube hoặc Suno → tải nhạc về → tách riêng vocal và beat bằng Demucs v4 hoặc BS‑RoFormer.  
 
 Không cần tài khoản, không upload file đi đâu, và sau lần tải model đầu tiên thì chạy hoàn toàn offline.
 
