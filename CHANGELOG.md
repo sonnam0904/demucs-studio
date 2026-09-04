@@ -1,3 +1,10 @@
+# [1.4.0](https://github.com/sonnam0904/demucs-studio/compare/v1.3.0...v1.4.0) (2026-09-04)
+
+
+### Features
+
+* Add Suno support for audio fetching and processing ([6869649](https://github.com/sonnam0904/demucs-studio/commit/68696498bf5afa2d87461f61863d6431e7c4b42a))
+
 # [1.3.0](https://github.com/sonnam0904/demucs-studio/compare/v1.2.0...v1.3.0) (2026-09-04)
 
 
