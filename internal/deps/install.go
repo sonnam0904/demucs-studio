@@ -15,6 +15,7 @@ import (
 	"demucs-studio/internal/netfetch"
 	"demucs-studio/internal/paths"
 	"demucs-studio/internal/proc"
+	"demucs-studio/internal/settings"
 )
 
 // Reporter is the subset of the event bus the installers need.
@@ -364,12 +365,91 @@ func adhocSign(ctx context.Context, path string, rep Reporter) {
 type EngineSpec struct {
 	// Engines to install: "demucs", "audioSeparator", or both.
 	Engines []string `json:"engines"`
-	// Accel: "cuda" installs CUDA torch wheels, "cpu" the CPU-only ones,
-	// "reuse" creates the venv with --system-site-packages and keeps whatever
-	// torch the host Python already has (fast, no multi-GB download).
+	// Accel: "cuda" installs CUDA torch wheels, "cpu" the CPU-only ones, "mps"
+	// the macOS wheel (which contains Metal support — the same wheel as "cpu"
+	// there, so on Apple Silicon the two differ only in the device used at
+	// separation time), and "reuse" creates the venv with
+	// --system-site-packages and keeps whatever torch the host Python already
+	// has (fast, no multi-GB download).
 	Accel string `json:"accel"`
 	// CudaTag selects the PyTorch wheel index, e.g. "cu126", "cu128".
 	CudaTag string `json:"cudaTag"`
+}
+
+// accelUnavailable explains why a PyTorch flavour cannot be installed on this
+// platform, or returns empty when it can. Parameterised so a Linux CI run
+// verifies the macOS and Windows answers too.
+//
+// Kept in step with settings.accelApplies, which rejects the same values when
+// they arrive from a stored file rather than from a UI.
+func accelUnavailable(goos, goarch, accel string) string {
+	if settings.AccelApplies(goos, goarch, accel) {
+		return ""
+	}
+	// Only the wording lives here. The rule itself is settings.AccelApplies,
+	// which also guards values arriving from a stored file; duplicating the
+	// switch meant two copies that could only be compared on whichever platform
+	// happened to run the test.
+	switch accel {
+	case "cuda":
+		msg := "macOS không có bản PyTorch CUDA"
+		if !settings.AccelApplies(goos, goarch, "mps") {
+			msg += ", và máy Mac Intel cũng không có Metal"
+		}
+		return msg + " — " + suggestAccels(goos, goarch, accel)
+	case "mps":
+		if goos != "darwin" {
+			return "MPS là GPU của Apple Silicon, không có trên " + goos +
+				" — " + suggestAccels(goos, goarch, accel)
+		}
+		return "MPS cần Apple Silicon; máy Mac Intel không có Metal backend — " +
+			suggestAccels(goos, goarch, accel)
+	}
+	return "lựa chọn PyTorch không hợp lệ: " + accel
+}
+
+// accelLabels is the install panel's own wording for each flavour, keyed by the
+// value that panel sends.
+//
+// One copy, because three things need it and they must agree: the refusal
+// messages above, the "reuse but no torch" error further down, and the test
+// that checks a refusal only ever names an option the reader can actually
+// click. Hand-copying the strings into each of them is how a refusal ends up
+// pointing at a button that was renamed or removed, with every test still
+// green. These must stay in step with the <option> text in frontend/index.html.
+var accelLabels = map[string]string{
+	"reuse": "Dùng lại bản đã có",
+	"cuda":  "Tải bản CUDA (GPU)",
+	"mps":   "Tải bản GPU Apple (MPS)",
+	"cpu":   "Tải bản CPU",
+}
+
+// suggestAccels renders the "hãy chọn X hoặc Y" half of a refusal from the
+// flavours this platform can genuinely install, so the advice cannot name a
+// choice the installer would refuse in turn. That is not hypothetical: an Intel
+// Mac used to be told to pick MPS, which it has no Metal backend for either.
+//
+// "reuse" is never suggested. It installs no torch at all, so offering it as
+// the way out of "no usable PyTorch" is circular — and it is the one option
+// whose own failure message calls this function.
+func suggestAccels(goos, goarch string, exclude ...string) string {
+	skip := map[string]bool{"reuse": true}
+	for _, e := range exclude {
+		skip[e] = true
+	}
+	var quoted []string
+	for _, a := range settings.AccelsFor(goos, goarch) {
+		if skip[a] || accelLabels[a] == "" {
+			continue
+		}
+		quoted = append(quoted, "“"+accelLabels[a]+"”")
+	}
+	if len(quoted) == 0 {
+		// Unreachable today — "cpu" applies everywhere — but a refusal that
+		// trails off mid-sentence is worse than one that stops cleanly.
+		return "không còn lựa chọn nào cài được trên máy này"
+	}
+	return "hãy chọn " + strings.Join(quoted, " hoặc ")
 }
 
 // withResidentEngines adds the engines already installed in the venv to the
@@ -516,6 +596,15 @@ func InstallEngines(ctx context.Context, r *Resolver, spec EngineSpec, rep Repor
 	if spec.Accel == "" {
 		spec.Accel = "reuse"
 	}
+	// Refuse a flavour this platform has no build for, instead of falling
+	// through to an index that quietly means something else. "mps" on Linux
+	// picked the CPU wheel and replaced a working CUDA torch with it — the
+	// damage is identical to the old "reuse" bug, and the trigger was one
+	// option the UI should not have shown. A settings file copied from another
+	// machine can carry the same value with no UI involved at all.
+	if reason := accelUnavailable(runtime.GOOS, runtime.GOARCH, spec.Accel); reason != "" {
+		return errors.New(reason)
+	}
 
 	// host.Argv may carry arguments (the Windows `py -3` launcher), so the venv
 	// command has to be assembled from the whole prefix.
@@ -581,8 +670,14 @@ func InstallEngines(ctx context.Context, r *Resolver, spec EngineSpec, rep Repor
 	// which means the PyPI default — the CPU wheel — and the user ended up on
 	// CPU having chosen the option that promised to keep what they had.
 	if spec.Accel == "reuse" && !canImport(ctx, []string{paths.VenvBin("python")}, "torch") {
-		return errors.New(`chọn "Dùng lại bản đã có" nhưng không thấy PyTorch nào dùng được — ` +
-			`hãy chọn "Tải bản CUDA (GPU)" hoặc "Tải bản CPU"`)
+		// Built from settings.AccelsFor, like every other refusal. Spelled out
+		// here against a bare GOOS check, this was wrong on an Intel Mac: it
+		// offered “Tải bản GPU Apple (MPS)”, which accelUnavailable refuses with
+		// "MPS cần Apple Silicon" and which the panel has already removed from
+		// the dropdown — a refusal whose advice leads straight to a second one.
+		return errors.New(`chọn “` + accelLabels["reuse"] +
+			`” nhưng không thấy PyTorch nào dùng được — ` +
+			suggestAccels(runtime.GOOS, runtime.GOARCH))
 	}
 
 	venvPy := paths.VenvBin("python")
@@ -602,6 +697,11 @@ func InstallEngines(ctx context.Context, r *Resolver, spec EngineSpec, rep Repor
 	}
 
 	if spec.Accel != "reuse" {
+		// On macOS there is exactly one wheel and it already contains MPS —
+		// verified with cuobjdump-equivalent inspection: the whl/cpu darwin
+		// arm64 build carries MPSGraph and mps_convolution symbols. So "GPU or
+		// CPU" is not an install choice there, it is the device passed at
+		// separation time, and both accel values install the same thing.
 		index := "https://download.pytorch.org/whl/cpu"
 		if spec.Accel == "cuda" {
 			index = "https://download.pytorch.org/whl/" + spec.CudaTag

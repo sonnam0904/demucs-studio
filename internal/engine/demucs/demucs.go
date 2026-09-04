@@ -241,6 +241,29 @@ func (b *Backend) EnsureModel(ctx context.Context, m engine.Model, r engine.Repo
 	return nil
 }
 
+// deviceArgs builds the device and worker flags.
+//
+// demucs takes any torch device string, so "mps" — Apple Silicon's Metal
+// backend — needs no special case. It is passed explicitly rather than letting
+// demucs auto-detect, because the app has already verified that this backend
+// runs a real kernel here, and demucs' own detection trusts is_available().
+//
+// --jobs forks worker processes and only helps on CPU. The test is equality
+// with "cpu", not inequality with "cuda": written the other way, adding a
+// second GPU backend silently started forking workers that then contend for
+// the same accelerator.
+func deviceArgs(device string, jobs int) []string {
+	var args []string
+	switch device {
+	case "cuda", "mps", "cpu":
+		args = append(args, "-d", device)
+	}
+	if jobs > 1 && device == "cpu" {
+		args = append(args, "-j", fmt.Sprint(jobs))
+	}
+	return args
+}
+
 // Separate runs demucs and reports progress derived from its tqdm bars.
 func (b *Backend) Separate(ctx context.Context, req engine.Request, r engine.Reporter) (engine.Result, error) {
 	argv := b.Argv(ctx)
@@ -263,15 +286,9 @@ func (b *Backend) Separate(ctx context.Context, req engine.Request, r engine.Rep
 		"--overlap", fmt.Sprintf("%.2f", req.Overlap),
 		"--shifts", fmt.Sprint(req.Shifts),
 	)
-	if req.Device == "cuda" || req.Device == "cpu" {
-		args = append(args, "-d", req.Device)
-	}
+	args = append(args, deviceArgs(req.Device, req.Jobs)...)
 	if req.Segment > 0 {
 		args = append(args, "--segment", fmt.Sprint(req.Segment))
-	}
-	// --jobs spawns worker processes and only helps on CPU.
-	if req.Jobs > 1 && req.Device != "cuda" {
-		args = append(args, "-j", fmt.Sprint(req.Jobs))
 	}
 	if req.TwoStems {
 		args = append(args, "--two-stems", "vocals")

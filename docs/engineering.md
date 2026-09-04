@@ -99,6 +99,72 @@ không parse được thành `x.y.z`, và `Check` thoát ngay trước cả khi 
 không có chặn này thì `make linux` rồi bấm Cập nhật sẽ ghi đè cây làm việc bằng
 một bản release.
 
+### Ba backend tính toán { #backend }
+
+`GPU.Backend` là thứ probe **đã xác minh chạy được**, và cũng chính là chuỗi
+device truyền cho engine. Vì thế `Thiết bị = Tự động` phải resolve theo
+`gpu.Backend`, không được hardcode `"cuda"`.
+
+| Backend | Nền tảng | Bản torch |
+| --- | --- | --- |
+| `cuda` | Linux, Windows + NVIDIA | wheel theo index `cuXXX` |
+| `mps` | macOS + Apple Silicon | wheel macOS duy nhất — **đã có Metal** |
+| `cpu` | mọi nơi | |
+
+Điểm khác biệt cốt lõi giữa CUDA và MPS: **trên macOS chỉ có một wheel**. Không
+có "bản CPU" và "bản GPU" riêng — `libtorch_cpu.dylib` của wheel darwin arm64
+chứa sẵn `MPSGraphTensor`, `MPSStream`, `mps_convolution`. Nên `Accel` là lựa
+chọn *cài đặt* trên Linux/Windows nhưng chỉ là *device lúc chạy* trên Mac, và cả
+`accel="mps"` lẫn `accel="cpu"` cài về cùng một thứ.
+
+Probe dùng **chung một smoke test** cho cả hai backend (`smoke(device)`): một
+kernel elementwise rồi một convolution. Hai thứ đó hỏng độc lập nhau — trên CUDA
+convolution đi qua cuDNN, trên MPS nó là op dễ thiếu nhất ở Metal stack cũ.
+
+!!! warning "RoFormer không tôn trọng lựa chọn device trên Mac"
+
+    `audio-separator` không có cờ device: nó tự dò `torch.cuda` rồi
+    `torch.backends.mps` và không có env nào ghi đè. `CUDA_VISIBLE_DEVICES=`
+    ép được CPU trên NVIDIA nhưng **không ẩn được MPS**. Demucs thì nhận `-d`
+    nên tôn trọng lựa chọn.
+
+    Cảnh báo được bắn từ `roformer.cpuCaveat(GOOS, GOARCH)` — keyed theo **máy**,
+    không theo backend GPU app đã dò được. `GPU.Backend` chỉ được gán *sau khi*
+    smoke test pass, nên gate theo nó sẽ im lặng đúng ở ca cần nói nhất: Mac có
+    MPS hỏng, người dùng chọn CPU để né, mà engine vẫn dùng MPS.
+
+### Một luật, mọi nơi cưỡng chế
+
+`settings.AccelApplies(goos, goarch, accel)` là **định nghĩa duy nhất** của
+"flavour này cài được trên nền tảng kia không". Mọi chỗ cần biết điều đó đều
+**gọi nó**, không chỗ nào chép lại:
+
+| Nơi | Dùng để | Hàm |
+| --- | --- | --- |
+| Store | chuẩn hoá `settings.json` mang từ máy khác sang | `normalize()` |
+| Installer | từ chối giá trị đến từ UI, kèm lời nhắn | `accelUnavailable()` |
+| Installer | dựng câu "hãy chọn X hoặc Y" trong mọi lỗi | `suggestAccels()` |
+| Danh sách CUDA | có index nào để chọn không | `cudaTargetsForOS()` |
+| Gợi ý ban đầu | preselect flavour nào cho máy này | `SuggestedAccel()` |
+| RoFormer | máy này có Metal nên CPU không ép được không | `cpuCaveat()` |
+| UI | `<option>` nào còn trong dropdown | `Bootstrap.accels`/`.devices` |
+
+Frontend **nhận danh sách qua `Bootstrap`**, không tự suy từ chuỗi `platform`.
+Bản trước suy lại ở main.ts và lệch: MPS hiện trên Linux, chọn vào là ghi đè
+torch CUDA đang chạy tốt bằng wheel CPU.
+
+Nhãn nút cài đặt sống ở `deps.accelLabels` — **một bản duy nhất**, vì cả câu từ
+chối, lỗi "reuse mà không có torch", lẫn test đều cần. Chép tay vào từng chỗ là
+cách một câu từ chối trỏ tới cái nút đã bị đổi tên mà mọi test vẫn xanh.
+
+!!! warning "Test so hai bản cài đặt độc lập, không so một hàm với chính nó"
+
+    `accelUnavailable` gọi `AccelApplies` ở dòng đầu, nên so hai thứ đó là so
+    một hàm với chính nó: `applies == refused` rút gọn thành `x == !x`, sai với
+    mọi input, test không bao giờ đỏ được. `TestAccelPlatformRuleMatchesInstaller`
+    vì thế chạy qua **store thật** (`Load` → `Set` → đọc lại) rồi mới so với
+    installer — hai đường code khác nhau, nên mới bắt được lúc chúng lệch.
+
 ### Cái gì bị thay, và ở đâu
 
 `.deb`/`.rpm` cài binary vào `/usr/bin` do root sở hữu và được trình quản lý gói

@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ import (
 	"demucs-studio/internal/engine"
 	"demucs-studio/internal/paths"
 	"demucs-studio/internal/proc"
+	"demucs-studio/internal/settings"
 )
 
 // entry is a curated catalog record. checkpoint is the filename
@@ -300,11 +302,18 @@ func (b *Backend) Separate(ctx context.Context, req engine.Request, r engine.Rep
 
 	env := []string{"PYTHONUNBUFFERED=1", "PYTHONIOENCODING=utf-8"}
 	if req.Device == "cpu" {
-		// audio-separator has no device flag; hiding the GPU is how you force CPU.
+		// audio-separator has no device flag; hiding the GPU is how you force
+		// CPU. This works for CUDA only — on Apple Silicon it picks MPS from
+		// torch.backends.mps.is_available() with nothing to override, so a CPU
+		// request there is honoured by Demucs but not by this engine.
 		env = append(env, "CUDA_VISIBLE_DEVICES=")
-	} else {
-		// Mixed precision roughly halves RoFormer inference time on CUDA and is
-		// meaningless on CPU.
+		if note := cpuCaveat(runtime.GOOS, runtime.GOARCH); note != "" {
+			r.Logf("warn", "%s", note)
+		}
+	} else if req.Device == "cuda" {
+		// Mixed precision roughly halves RoFormer inference time on CUDA. Not
+		// requested on MPS: autocast there is far less exercised upstream, and
+		// a wrong-dtype failure mid-separation costs more than the speed-up.
 		args = append(args, "--use_autocast")
 	}
 	args = append(args, req.Input)
@@ -438,6 +447,33 @@ func isBareFilename(name string) bool {
 	}
 	// filepath.Base collapses any separator form the current OS understands.
 	return filepath.Base(name) == name
+}
+
+// cpuCaveat returns the warning a CPU request deserves on this machine, or ""
+// when the request is honoured in full.
+//
+// Saying "switched to CPU" has to be true, and here it is only half true:
+// CUDA_VISIBLE_DEVICES hides an NVIDIA card but not Metal, so on Apple Silicon
+// audio-separator goes on picking MPS from torch.backends.mps.is_available()
+// with nothing to override.
+//
+// Keyed on the machine, deliberately, rather than on the app's detected GPU
+// backend — that backend is only recorded once the probe passes, so keying on
+// it would silence the warning in the one case that needs it: a Mac where MPS
+// is broken and the user picked CPU to get away from it.
+//
+// "Which machines have Metal" is settings.AccelApplies(goos, goarch, "mps"),
+// not a second spelling of darwin/arm64. The two answer different questions —
+// one is "can this flavour be installed", this one is "will Metal be used
+// regardless" — but they are the same predicate, and a copy could only ever
+// drift: refine the mps clause there and this warning would keep the old rule,
+// going silent or firing on the wrong machines with nothing to catch it.
+func cpuCaveat(goos, goarch string) string {
+	if settings.AccelApplies(goos, goarch, "mps") {
+		return "audio-separator không có tuỳ chọn thiết bị và vẫn sẽ chạy trên MPS; " +
+			"lựa chọn CPU chỉ có tác dụng với Demucs."
+	}
+	return ""
 }
 
 // cleanLabel strips the redundant "Roformer Model: " prefix audio-separator

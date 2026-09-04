@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"demucs-studio/internal/paths"
@@ -626,5 +628,142 @@ func TestDescribeCardOnlyFillsWhatIsMissing(t *testing.T) {
 	}
 	if got.Reason != "chưa tìm thấy PyTorch" {
 		t.Errorf("describeCard must not touch Reason, got %q", got.Reason)
+	}
+}
+
+// The probe must name which accelerator it verified, because the app passes
+// that string straight to the engines as the device. Resolving "auto" to a
+// hardcoded "cuda" is what would send a Mac down a CUDA path its torch has no
+// support for.
+func TestGpuProbeHandlesBothBackends(t *testing.T) {
+	// Structural checks on the probe source: it cannot be executed here without
+	// a torch, but the two backends must both be reachable and both must run
+	// the smoke test rather than trusting an is_available() flag.
+	for _, want := range []string{
+		`out["backend"] = "cuda"`,
+		`out["backend"] = "mps"`,
+		`smoke("cuda")`,
+		`smoke("mps")`,
+		// MPS built but unusable is its own diagnosis: an Intel Mac or a macOS
+		// older than 12.3, neither of which is fixed by reinstalling.
+		"mps.is_built()",
+	} {
+		if !strings.Contains(gpuProbe, want) {
+			t.Errorf("gpuProbe is missing %q", want)
+		}
+	}
+	// The smoke test has to be the same code for both, or one backend ends up
+	// less thoroughly checked than the other — which is how a working
+	// elementwise kernel once stood in for a convolution that failed.
+	if strings.Count(gpuProbe, "conv1d") != 1 {
+		t.Errorf("expected one shared conv1d smoke test, found %d", strings.Count(gpuProbe, "conv1d"))
+	}
+}
+
+func TestAppleChipRejectsNonAppleOutput(t *testing.T) {
+	// On this Linux box sysctl either is absent or prints an Intel/AMD string;
+	// either way the name must stay empty rather than becoming junk the UI
+	// renders as a GPU name.
+	if got := appleChip(context.Background()); got != "" && !strings.HasPrefix(got, "Apple ") {
+		t.Errorf("appleChip returned %q, want empty or an Apple string", got)
+	}
+}
+
+// Importing torch costs seconds and hundreds of megabytes, and two callers
+// arrive at launch within that window: the startup warm-up goroutine and the
+// frontend's SuggestedAccel. Checking the cache is not enough on its own — the
+// check happens before the probe, so both used to find it unchecked and each
+// forked its own interpreter.
+func TestDetectGPUProbesOnceForConcurrentCallers(t *testing.T) {
+	var probes atomic.Int32
+	release := make(chan struct{})
+	r := NewResolver(func() settings.Settings { return settings.Defaults() })
+	r.probeFn = func(context.Context) GPU {
+		probes.Add(1)
+		<-release // hold the probe open so every caller piles up behind it
+		return GPU{Checked: true, Available: true, Backend: "cuda", Name: "GTX 960"}
+	}
+
+	const callers = 8
+	got := make(chan GPU, callers)
+	var started sync.WaitGroup
+	started.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			started.Done()
+			got <- r.DetectGPU(context.Background())
+		}()
+	}
+	started.Wait()
+	// Every caller is inside DetectGPU now; let the single probe finish.
+	close(release)
+
+	for i := 0; i < callers; i++ {
+		if g := <-got; g.Backend != "cuda" || g.Name != "GTX 960" {
+			t.Errorf("caller %d nhận %+v, muốn kết quả của probe duy nhất", i, g)
+		}
+	}
+	if n := probes.Load(); n != 1 {
+		t.Errorf("%d lần probe cho %d caller đồng thời, muốn đúng 1", n, callers)
+	}
+
+	// And the answer is cached afterwards, so a later caller adds nothing.
+	r.DetectGPU(context.Background())
+	if n := probes.Load(); n != 1 {
+		t.Errorf("caller sau khi đã cache lại probe thêm: %d", n)
+	}
+}
+
+// InvalidateAll exists to force a re-probe after an engine install, so the
+// dedup must not turn into a permanent cache.
+func TestDetectGPUReprobesAfterInvalidateAll(t *testing.T) {
+	var probes atomic.Int32
+	r := NewResolver(func() settings.Settings { return settings.Defaults() })
+	r.probeFn = func(context.Context) GPU {
+		probes.Add(1)
+		return GPU{Checked: true, Reason: "chưa tìm thấy PyTorch"}
+	}
+	r.DetectGPU(context.Background())
+	r.InvalidateAll()
+	r.DetectGPU(context.Background())
+	if n := probes.Load(); n != 2 {
+		t.Errorf("probe %d lần quanh InvalidateAll, muốn 2", n)
+	}
+}
+
+// A caller that gives up must not be left hanging on someone else's probe, and
+// must not poison the cache with its own cancellation.
+func TestDetectGPUWaiterHonoursContextCancel(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	r := NewResolver(func() settings.Settings { return settings.Defaults() })
+	r.probeFn = func(context.Context) GPU {
+		<-release
+		return GPU{Checked: true, Available: true, Backend: "cuda"}
+	}
+
+	holder := make(chan struct{})
+	go func() { defer close(holder); r.DetectGPU(context.Background()) }()
+
+	// Wait until the probe is genuinely in flight, then cancel a second caller.
+	for {
+		r.mu.Lock()
+		inFlight := r.gpuInFlight != nil
+		r.mu.Unlock()
+		if inFlight {
+			break
+		}
+		runtime.Gosched()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if g := r.DetectGPU(ctx); g.Available {
+		t.Errorf("caller bị huỷ nhận %+v, không được báo có GPU", g)
+	}
+	r.mu.Lock()
+	cached := r.gpu
+	r.mu.Unlock()
+	if cached.Checked {
+		t.Errorf("huỷ đã ghi vào cache: %+v", cached)
 	}
 }

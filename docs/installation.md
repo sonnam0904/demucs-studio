@@ -168,10 +168,29 @@ trong ba tag đó sẽ được chuyển về `cu126`.
     thay vì để pip tự kéo về bản CPU — đó là cách người dùng từng âm thầm mất
     bản GPU đang chạy tốt.
 
-!!! warning "Trên macOS đừng chọn bản CUDA"
+!!! success "Apple Silicon dùng được GPU tích hợp qua MPS"
 
-    Mac không có CUDA — kể cả máy Intel đời cũ từng gắn card rời. Chọn **Tải bản
-    CPU**; PyTorch sẽ chạy bằng CPU hoặc MPS tuỳ engine.
+    Trên máy M1/M2/M3/M4/M5, ô **PyTorch** hiện **Tải bản GPU Apple (MPS)** thay
+    cho lựa chọn CUDA, và ô **CUDA** bị ẩn — Mac không có CUDA, cũng không có
+    index nào để chọn.
+
+    macOS chỉ có **một** bản PyTorch và nó **đã chứa Metal** (kiểm bằng cách soi
+    symbol `MPSGraphTensor`/`mps_convolution` trong `libtorch_cpu.dylib` của
+    wheel). Nên "GPU hay CPU" trên Mac là lựa chọn **lúc tách nhạc**, không phải
+    lúc cài: hai option cài về cùng một thứ, khác nhau ở ô **Thiết bị**.
+
+    Cài xong, badge góc trên sẽ hiện tên chip — ví dụ `GPU · Apple M2 Pro`.
+
+    Mac **Intel** không có MPS; ở đó chỉ còn CPU.
+
+!!! warning "RoFormer trên Mac luôn dùng MPS"
+
+    `audio-separator` không có cờ chọn device — nó tự dò `torch.backends.mps` và
+    không có cách nào ép về CPU. Nên đặt **Thiết bị = CPU** chỉ có tác dụng với
+    Demucs; RoFormer vẫn chạy MPS.
+
+    App **nói rõ điều này trong Nhật ký** khi bạn chọn CPU cho một model
+    RoFormer trên Mac, thay vì báo "chuyển sang CPU" rồi chạy MPS.
 
 !!! danger "GPU đời cũ: *sm_XX không nằm trong các kiến trúc torch hỗ trợ*"
 

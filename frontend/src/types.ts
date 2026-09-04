@@ -64,6 +64,9 @@ export interface CudaTarget {
 export interface GPU {
   checked: boolean;
   available: boolean;
+  // Which accelerator was verified: "cuda", "mps" (Apple Silicon via Metal), or
+  // empty when none works. Also the device string the engines take.
+  backend: string;
   name: string;
   torch: string;
   // CUDA compute capability ("5.2") and driver version ("580.173.02"). Both
@@ -171,4 +174,10 @@ export interface Bootstrap {
   outputDir: string;
   cpus: number;
   appVersion: string;
+  // The PyTorch flavours and separation devices this machine may be offered,
+  // decided by settings.AccelApplies on the Go side. Sent as data so the UI
+  // does not re-derive the rule from `platform` and drift from the store and
+  // the installer, which both enforce it too.
+  accels: string[];
+  devices: string[];
 }

@@ -27,7 +27,7 @@ type Settings struct {
 	// reset them. Accel empty means "never chosen", which is what lets the UI
 	// fall back to App.SuggestedAccel for a first-time user without overriding
 	// a deliberate choice afterwards.
-	Accel   string `json:"accel"`   // "", reuse | cuda | cpu
+	Accel   string `json:"accel"`   // "", reuse | cuda | mps | cpu
 	CudaTag string `json:"cudaTag"` // cu118 | cu121 | cu124 | cu126 | cu128 | cu130
 
 	// Download options.
@@ -80,6 +80,85 @@ func Defaults() Settings {
 		RoformerBatchSize:   1,
 		Normalization:       0.9,
 	}
+}
+
+// AccelApplies reports whether a PyTorch flavour can be installed on the named
+// platform at all. This is the single definition of that rule.
+//
+// Not a taste question, and not something the UI can be trusted to enforce: the
+// settings file lives in the data directory and travels with it, so a value can
+// arrive from a machine this one is nothing like. A stored "mps" on Linux
+// resolves to the CPU wheel index and silently replaces a working CUDA torch.
+//
+// Parameterised rather than reading runtime.GOOS directly so a test on one
+// platform can check the answers for every other — the previous arrangement had
+// this rule written twice and compared with a host-dependent test, which meant
+// a Linux CI run could only ever exercise the Linux column.
+func AccelApplies(goos, goarch, accel string) bool {
+	switch accel {
+	case "reuse", "cpu":
+		return true
+	case "cuda":
+		// No CUDA build of PyTorch exists for macOS.
+		return goos != "darwin"
+	case "mps":
+		// Metal, and only on Apple Silicon: an Intel Mac has no MPS backend.
+		return goos == "darwin" && goarch == "arm64"
+	}
+	return false
+}
+
+// DeviceApplies reports whether a separation device is one the named platform
+// could ever use. "auto" and "cpu" always are; the accelerators follow the same
+// rule as the PyTorch flavour that provides them.
+func DeviceApplies(goos, goarch, device string) bool {
+	switch device {
+	case "auto", "cpu":
+		return true
+	case "cuda", "mps":
+		return AccelApplies(goos, goarch, device)
+	}
+	return false
+}
+
+// AllAccels and AllDevices are every value the install panel and the device
+// picker can offer, in the order their dropdowns list them. Kept next to the
+// rule that filters them so adding an option cannot quietly skip the gate.
+var (
+	AllAccels  = []string{"reuse", "cuda", "mps", "cpu"}
+	AllDevices = []string{"auto", "cuda", "mps", "cpu"}
+)
+
+// AccelsFor and DevicesFor are what a platform may actually be shown. The
+// frontend receives these through Bootstrap instead of re-deriving them from
+// the platform string, which had made the UI a third copy of a rule the store
+// and the installer already shared — and the copy that decides what the user
+// can click.
+func AccelsFor(goos, goarch string) []string {
+	return filter(AllAccels, func(v string) bool { return AccelApplies(goos, goarch, v) })
+}
+
+func DevicesFor(goos, goarch string) []string {
+	return filter(AllDevices, func(v string) bool { return DeviceApplies(goos, goarch, v) })
+}
+
+// Non-nil even when nothing survives, so the value marshals to [] and not null.
+func filter(in []string, keep func(string) bool) []string {
+	out := []string{}
+	for _, v := range in {
+		if keep(v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func accelApplies(accel string) bool {
+	return AccelApplies(runtime.GOOS, runtime.GOARCH, accel)
+}
+
+func deviceApplies(device string) bool {
+	return DeviceApplies(runtime.GOOS, runtime.GOARCH, device)
 }
 
 // Store is a concurrency-safe holder around the settings file.
@@ -144,13 +223,22 @@ func (s *Store) normalizeLocked() {
 	if !oneOf(s.data.StemFormat, "wav", "flac", "mp3") {
 		s.data.StemFormat = d.StemFormat
 	}
-	if !oneOf(s.data.Device, "auto", "cuda", "cpu") {
+	// Device gets the same platform gate as Accel below, and for the same
+	// reason: this file travels with the data directory. A device:"mps" copied
+	// onto Linux used to survive normalisation and then lose the GPU on every
+	// single separation — app.go sees Backend "cuda" != "mps" and falls back to
+	// CPU — while the settings panel showed "Tự động", because the UI had
+	// removed the option it could not offer. Reset to auto, which is always
+	// right: the app resolves it against the accelerator it has verified.
+	if !deviceApplies(s.data.Device) {
 		s.data.Device = d.Device
 	}
 	// "" is valid for Accel and means "not chosen yet"; anything else must be a
 	// flavour InstallEngines understands.
-	if s.data.Accel != "" && !oneOf(s.data.Accel, "reuse", "cuda", "cpu") {
-		s.data.Accel = d.Accel
+	if s.data.Accel != "" && !accelApplies(s.data.Accel) {
+		// Cleared, not defaulted: empty means "not chosen", which is what makes
+		// the UI ask SuggestedAccel for an answer that fits this machine.
+		s.data.Accel = ""
 	}
 	// Only the indexes the install panel still offers. A tag that was valid in
 	// an older build — cu121, cu124, cu128 — is migrated to the default rather

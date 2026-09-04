@@ -2,8 +2,11 @@ package deps
 
 import (
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
+
+	"demucs-studio/internal/settings"
 )
 
 // This file answers one question for the UI: given a PyTorch CUDA index, which
@@ -95,6 +98,29 @@ var cudaIndexes = []CudaTarget{
 // compute capabilities off a table. Empty arguments mean "unknown", which
 // yields no verdict rather than a negative one.
 func CudaTargetsFor(capability, driver string) []CudaTarget {
+	return cudaTargetsForOS(runtime.GOOS, runtime.GOARCH, capability, driver)
+}
+
+// cudaTargetsForOS is the platform-parameterised half, so a Linux CI run can
+// verify the macOS behaviour instead of only discovering it on a Mac.
+func cudaTargetsForOS(goos, goarch, capability, driver string) []CudaTarget {
+	// Where no CUDA wheel can be installed there is no index to choose, and an
+	// empty list is how the UI knows to hide the picker.
+	//
+	// Asked of settings.AccelApplies rather than testing goos == "darwin" here:
+	// that same predicate decides whether the frontend shows the picker at all
+	// (Bootstrap.accels -> cudaPickerApplies). Two copies could disagree, and
+	// the disagreement has no error path — the panel would show a CUDA picker
+	// this function never fills, leaving the install button stuck forever on
+	// "Đang lấy danh sách bản CUDA…".
+	//
+	// Empty, never nil: this crosses the Wails bridge as JSON, where a nil
+	// slice marshals to `null` rather than `[]`. The webview then iterates
+	// null, throws, and takes the whole of boot() down with it — including the
+	// autosave wiring that runs after it.
+	if !settings.AccelApplies(goos, goarch, "cuda") {
+		return []CudaTarget{}
+	}
 	out := make([]CudaTarget, 0, len(cudaIndexes))
 	for _, t := range cudaIndexes {
 		t.Families = familiesFor(t.Arches)

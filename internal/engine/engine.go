@@ -46,10 +46,13 @@ type Stem struct {
 
 // Request is a separation job.
 type Request struct {
-	Input   string // absolute path to the source audio
-	OutDir  string // job directory; the backend may create subfolders
-	Model   Model
-	Device  string // auto | cuda | cpu
+	Input  string // absolute path to the source audio
+	OutDir string // job directory; the backend may create subfolders
+	Model  Model
+	// Device is already resolved when it reaches a backend: the app turns
+	// "auto" into the accelerator it verified. "mps" is Apple Silicon's Metal
+	// backend.
+	Device  string // cuda | mps | cpu
 	Format  string // wav | flac | mp3
 	Mp3Rate int
 

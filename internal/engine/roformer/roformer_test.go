@@ -231,3 +231,25 @@ func TestRoformerModelsDoNotOfferStemChoice(t *testing.T) {
 		}
 	}
 }
+
+// A CPU request is honoured by CUDA_VISIBLE_DEVICES= but not on Apple Silicon,
+// where audio-separator reads torch.backends.mps.is_available() itself and
+// Metal cannot be hidden. The caveat keys on the machine rather than on the
+// app's probed GPU backend: that backend is only filled in after the probe
+// passes, so keying on it would go silent on the broken-MPS Mac whose user
+// picked CPU precisely to escape the crash.
+func TestRoformerWarnsThatCPUIsIgnoredOnAppleSilicon(t *testing.T) {
+	got := cpuCaveat("darwin", "arm64")
+	if !strings.Contains(got, "MPS") || !strings.Contains(got, "Demucs") {
+		t.Errorf("Apple Silicon phải cảnh báo CPU vẫn chạy MPS, được: %q", got)
+	}
+	// Everywhere else the request really is honoured, including an Intel Mac,
+	// which has no MPS at all.
+	for _, p := range [][2]string{
+		{"linux", "amd64"}, {"windows", "amd64"}, {"darwin", "amd64"},
+	} {
+		if note := cpuCaveat(p[0], p[1]); note != "" {
+			t.Errorf("%s/%s ép được CPU thật, không cần cảnh báo: %q", p[0], p[1], note)
+		}
+	}
+}

@@ -95,19 +95,69 @@ let cudaTargets: CudaTarget[] = [];
 // deps event for a card no index covers.
 let cudaTargetsCapability: string | null = null;
 
+// False on macOS, where there is no CUDA index to choose. Kept separate from
+// `cudaTargets.length` so an empty list means "not loaded yet" everywhere else
+// and never permanently disables the install button.
+let cudaPickerApplies = true;
+
+// Set when CudaTargets() has failed. The list is a convenience — the stored tag
+// is already a valid index, normalised by the settings store — so a failed
+// fetch must not be allowed to hold the install button hostage forever.
+let cudaTargetsUnavailable = false;
+
+// The tag an install should use: whatever the user picked, or the stored one
+// when the select has no options to pick from. That happens for a real stretch
+// of every launch — the list is fetched asynchronously — and on any launch
+// where the fetch fails outright. Reading the select raw sent cudaTag: "" in
+// those windows, which the backend resolves to its own default rather than to
+// the index the user chose last time.
+// `?? ""` only covers the window before boot() has any settings, where nothing
+// is installable yet anyway; once it does, the store has already normalised the
+// tag to one of the offered indexes.
+function currentCudaTag(): string {
+  return $<HTMLSelectElement>("cuda-tag").value || (state.settings?.cudaTag ?? "");
+}
+
+// Bumped per call so a slow fetch that has been overtaken cannot write its
+// stale list — and stale selection — over a newer one. renderDeps fires this on
+// every capability change, so two can genuinely be in flight at once.
+let cudaTargetsGeneration = 0;
+
 async function renderCudaTargets(preferred: string, capability: string) {
+  const generation = ++cudaTargetsGeneration;
+  // Cleared per attempt, not only on success: left set from a previous failure
+  // it would keep the install button unblocked for the whole of this fetch,
+  // defeating the very wait the button exists for.
+  cudaTargetsUnavailable = false;
   const select = $<HTMLSelectElement>("cuda-tag");
   let fetched: CudaTarget[];
   try {
     fetched = (await api.CudaTargets()) as CudaTarget[];
   } catch (e) {
+    if (generation !== cudaTargetsGeneration) return;
     // index.html ships this select empty, so there is no earlier list to fall
-    // back on: without options the user cannot pick an index at all and the
-    // install would silently use the backend default. Say so instead.
-    toast(`Không lấy được danh sách bản CUDA: ${errText(e)}`, "error");
+    // back on and the user cannot pick an index at all. Say so — but do not
+    // leave the install blocked: currentCudaTag() falls back to the stored tag,
+    // which the settings store guarantees is one of the offered indexes.
+    //
+    // cudaTargetsCapability is deliberately NOT claimed here. renderDeps only
+    // re-fetches when the capability differs from what the table was built for,
+    // so marking a capability handled on the failure path meant one transient
+    // error killed every retry for it — including the manual recheck button,
+    // which re-reports the same cached capability.
+    cudaTargetsUnavailable = true;
+    refreshInstallEnginesButton();
+    renderCudaSupport();
+    toast(
+      `Không lấy được danh sách bản CUDA: ${errText(e)}. Sẽ dùng bản đã lưu (${currentCudaTag()}).`,
+      "error",
+    );
     return;
   }
-  cudaTargets = fetched;
+  if (generation !== cudaTargetsGeneration) return;
+  // `?? []` belts the Go side's braces: a nil slice would arrive as null and
+  // the loop below would throw, aborting boot() before autosave is wired.
+  cudaTargets = fetched ?? [];
   cudaTargetsCapability = capability;
 
   select.textContent = "";
@@ -127,10 +177,56 @@ async function renderCudaTargets(preferred: string, capability: string) {
   renderCudaSupport();
 }
 
-// Installing with an empty CUDA select would send cudaTag: "" and let the
-// backend silently choose for the user, so the button waits for the options.
+// Keeps only the accelerator and device options this machine can actually use.
+// Offering the rest would let a user pick a backend their torch has no support
+// for, which the app then silently downgrades to CPU.
+//
+// The allowed values arrive from Bootstrap rather than being re-derived from
+// the platform string here. They come out of settings.AccelApplies, the same
+// rule that normalises a settings file copied off another machine and that the
+// installer refuses by, so this can no longer drift from either — the drift is
+// what put MPS in the dropdown on Linux, where choosing it replaced a working
+// CUDA torch with the CPU wheel.
+function applyPlatformToInstallPanel(accels: string[], devices: string[]) {
+  for (const [id, allowed] of [
+    ["accel-select", accels],
+    ["device-select", devices],
+  ] as Array<[string, string[]]>) {
+    for (const opt of Array.from(
+      $<HTMLSelectElement>(id).querySelectorAll<HTMLOptionElement>("option"),
+    )) {
+      if (allowed.includes(opt.value)) continue;
+      // Removed from the DOM, not just marked hidden: WebKit does not reliably
+      // honour `hidden` on an <option>, and this app runs on WebKitGTK. The MPS
+      // option stayed visible on Linux because of exactly that.
+      opt.remove();
+    }
+  }
+
+  // A CUDA index is only worth choosing where a CUDA wheel can be installed —
+  // on macOS CudaTargets() returns nothing, and the install button must stop
+  // waiting for a list that will never arrive.
+  cudaPickerApplies = accels.includes("cuda");
+  // classList, not the `hidden` property: #cuda-field carries .field, whose
+  // `display: flex` is an author rule and therefore beats the user agent's
+  // `[hidden] { display: none }`. Setting .hidden here did nothing at all and
+  // left an empty CUDA dropdown on screen. `.hidden` in this stylesheet is
+  // `display: none !important`, which is what the rest of the file uses.
+  $("cuda-field").classList.toggle("hidden", !cudaPickerApplies);
+  if (!cudaPickerApplies) $("cuda-support").classList.add("hidden");
+  refreshInstallEnginesButton();
+}
+
+// The button waits for the options so the user gets to see which index they are
+// installing — but only while the list is still on its way. Once the fetch has
+// failed there is nothing left to wait for, and blocking on it would mean one
+// unreachable call permanently disables installing; currentCudaTag() falls back
+// to the stored index, which is a valid one.
 function refreshInstallEnginesButton() {
-  const ready = cudaTargets.length > 0 && $<HTMLSelectElement>("cuda-tag").value !== "";
+  const ready =
+    !cudaPickerApplies ||
+    cudaTargetsUnavailable ||
+    (cudaTargets.length > 0 && currentCudaTag() !== "");
   const btn = $<HTMLButtonElement>("btn-install-engines");
   btn.disabled = !ready;
   btn.title = ready ? "" : "Đang lấy danh sách bản CUDA…";
@@ -140,6 +236,19 @@ function renderCudaSupport() {
   const box = $("cuda-support");
   const tag = $<HTMLSelectElement>("cuda-tag").value;
   const target = cudaTargets.find((t) => t.tag === tag);
+
+  // A failed fetch still leaves the install button enabled, so silence here
+  // would be a claim: the panel would look exactly like a card that passed its
+  // compatibility check. Say the check could not run instead — the user is
+  // about to download several gigabytes on the strength of it.
+  if (!target && cudaTargetsUnavailable && cudaPickerApplies) {
+    box.classList.remove("hidden", "is-good");
+    box.classList.add("is-warn");
+    box.textContent =
+      `⚠ Không kiểm tra được card có chạy được ${currentCudaTag()} hay không ` +
+      `(chưa lấy được danh sách bản CUDA). Cài đặt vẫn tiếp tục với bản đã lưu.`;
+    return;
+  }
   if (!target) {
     box.classList.add("hidden");
     return;
@@ -377,9 +486,12 @@ function renderDeps(report: DepsReport) {
     badge.textContent = "Đang kiểm tra GPU…";
     badge.className = "badge";
   } else if (report.gpu.available) {
-    badge.textContent = `GPU · ${report.gpu.name || "CUDA"}`;
+    // The backend is worth naming: "GPU" alone would leave an Apple Silicon
+    // user unsure whether Metal or nothing at all is being used.
+    const backend = report.gpu.backend === "mps" ? "MPS" : "CUDA";
+    badge.textContent = `GPU · ${report.gpu.name || backend}`;
     badge.className = "badge is-good";
-    badge.title = `torch ${report.gpu.torch}`;
+    badge.title = `${backend} · torch ${report.gpu.torch}`;
   } else {
     badge.textContent = "CPU only";
     badge.className = "badge is-warn";
@@ -446,7 +558,12 @@ function renderDeps(report: DepsReport) {
   // capability change — comparing against what the table was built for, not
   // against whether anything is supported.
   if (report.gpu.capability !== cudaTargetsCapability) {
-    void renderCudaTargets($<HTMLSelectElement>("cuda-tag").value, report.gpu.capability);
+    // currentCudaTag(), not the raw select: this fires while the select can
+    // still be empty — the very first deps event overtakes boot()'s own fetch —
+    // and an empty `preferred` matches no option, so the list would settle on
+    // the recommended index and the next autosave would write it over the tag
+    // the user actually chose.
+    void renderCudaTargets(currentCudaTag(), report.gpu.capability);
   }
 }
 
@@ -470,7 +587,7 @@ async function installEngine(id: string, label: string) {
     await api.InstallEngines({
       engines: [id],
       accel: $<HTMLSelectElement>("accel-select").value,
-      cudaTag: $<HTMLSelectElement>("cuda-tag").value,
+      cudaTag: currentCudaTag(),
     });
     toast(`Đã cài ${label}.`, "good");
     await reloadDeps(true);
@@ -749,10 +866,24 @@ function renderResult(result: SeparateResult) {
 
 // ---------------------------------------------------------------- settings
 
+// selectOrFallback assigns a stored value to a <select> and reports whether it
+// stuck, falling back when it did not.
+//
+// A select silently refuses a value with no matching <option> — it ends up as
+// "" rather than throwing — and applyPlatformToInstallPanel removes the options
+// this platform cannot use. Assigning blindly therefore left the control
+// showing nothing, or showing index 0, while the store still held the old
+// value and nothing reconciled them.
+function selectOrFallback(id: string, value: string, fallback: string) {
+  const select = $<HTMLSelectElement>(id);
+  select.value = value;
+  if (select.value !== value) select.value = fallback;
+}
+
 function fillSettings(s: Settings) {
   state.settings = s;
   $<HTMLSelectElement>("audio-format").value = s.audioFormat;
-  $<HTMLSelectElement>("device-select").value = s.device;
+  selectOrFallback("device-select", s.device, "auto");
   $<HTMLSelectElement>("stems-select").value = s.twoStems ? "two" : "all";
   $<HTMLInputElement>("set-outdir").value = s.outputDir;
   $<HTMLSelectElement>("set-stemformat").value = s.stemFormat;
@@ -760,7 +891,7 @@ function fillSettings(s: Settings) {
   $<HTMLSelectElement>("set-cookies").value = s.cookiesFromBrowser;
   // Only when one was actually chosen: an empty accel means the user has never
   // picked, and boot() asks the backend to suggest one instead.
-  if (s.accel) $<HTMLSelectElement>("accel-select").value = s.accel;
+  if (s.accel) selectOrFallback("accel-select", s.accel, "reuse");
   $<HTMLSelectElement>("cuda-tag").value = s.cudaTag;
   $<HTMLInputElement>("set-shifts").value = String(s.shifts);
   $<HTMLInputElement>("set-overlap").value = String(Math.round(s.overlap * 100));
@@ -805,7 +936,7 @@ function collectSettingsFromForm(): Partial<Settings> {
     mp3Bitrate: Number($<HTMLSelectElement>("set-mp3").value),
     cookiesFromBrowser: $<HTMLSelectElement>("set-cookies").value,
     accel: $<HTMLSelectElement>("accel-select").value,
-    cudaTag: $<HTMLSelectElement>("cuda-tag").value,
+    cudaTag: currentCudaTag(),
     shifts: Number($<HTMLInputElement>("set-shifts").value),
     overlap: Number($<HTMLInputElement>("set-overlap").value) / 100,
     jobs: Number($<HTMLInputElement>("set-jobs").value),
@@ -982,7 +1113,7 @@ function wireActions() {
       await api.InstallEngines({
         engines,
         accel: $<HTMLSelectElement>("accel-select").value,
-        cudaTag: $<HTMLSelectElement>("cuda-tag").value,
+        cudaTag: currentCudaTag(),
       });
       toast("Cài engine xong.", "good");
       await reloadDeps(true);
@@ -1041,6 +1172,47 @@ function wireActions() {
   });
 }
 
+// ------------------------------------------------------------------- splash
+
+// The window paints its markup before style.css is guaranteed to be applied —
+// in dev the stylesheet arrives through the module graph, and either way the
+// panels are still empty until Bootstrap answers. #splash covers both gaps with
+// styling of its own (inline in index.html), and is torn down only once the
+// real UI is both styled and filled.
+
+const raf = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
+
+const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms));
+
+// --bg only resolves once style.css is live, which makes it a direct probe for
+// "the app's stylesheet is applied" — more precise than a load event, which
+// fires per-<link> and says nothing in dev. Capped so a stylesheet that never
+// arrives leaves a usable window rather than a permanent splash.
+async function stylesReady(timeoutMs = 3000) {
+  const applied = () =>
+    getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() !== "";
+  const start = performance.now();
+  while (!applied() && performance.now() - start < timeoutMs) await raf();
+
+  // Fonts settle after the stylesheet, and swapping one in behind a revealed UI
+  // reflows every label. Raced, because document.fonts.ready can stay pending
+  // on a webview that never resolves it.
+  await Promise.race([document.fonts?.ready ?? Promise.resolve(), sleep(1500)]);
+}
+
+async function hideSplash() {
+  await stylesReady();
+  document.body.dataset.appState = "ready";
+
+  const splash = document.getElementById("splash");
+  if (!splash) return;
+  splash.classList.add("is-done");
+  // Matches the 260ms opacity transition in index.html; a transitionend
+  // listener would never fire under prefers-reduced-motion.
+  await sleep(300);
+  splash.remove();
+}
+
 // ---------------------------------------------------------------- bootstrap
 
 async function boot() {
@@ -1056,8 +1228,21 @@ async function boot() {
 
   try {
     const boot = (await api.Bootstrap()) as Bootstrap;
+    // Strictly before fillSettings: it removes the <option>s this platform
+    // cannot use, and removing an option that is already selected silently
+    // resets its select to index 0. Run the other way round, a stored
+    // device/accel was selected and then dropped, leaving the UI showing
+    // "Tự động" while the store still held the old value — with autosave not
+    // yet wired, nothing ever reconciled the two.
+    applyPlatformToInstallPanel(boot.accels, boot.devices);
     fillSettings(boot.settings);
     renderModels(boot.models);
+    // Claimed before renderDeps so its "capability changed, re-fetch" branch
+    // sees the value it is about to be handed and stays quiet. Left at null, it
+    // fired a second, unawaited renderCudaTargets that raced the awaited one
+    // below — and lost the user's stored tag when it did, because it reads the
+    // select, which is still empty this early.
+    cudaTargetsCapability = boot.deps.gpu.capability;
     renderDeps(boot.deps);
     renderAbout(boot);
     // Seeded here rather than waiting for checkForUpdate, so the badge shows
@@ -1083,6 +1268,11 @@ async function boot() {
     wireSettingsAutosave();
   } catch (e) {
     toast(`Không khởi tạo được: ${errText(e)}`, "error");
+  } finally {
+    // In the finally, not the try: a failed Bootstrap still has to hand the
+    // window over, otherwise the error toast is painted behind the splash and
+    // the app looks hung.
+    await hideSplash();
   }
 
   // Deliberately outside the try and not awaited: the update check reaches the

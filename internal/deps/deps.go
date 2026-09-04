@@ -70,10 +70,15 @@ type Tool struct {
 // this machine's GPU. Available means "verified by executing a CUDA op", not
 // merely that torch.cuda.is_available() said yes — see DetectGPU.
 type GPU struct {
-	Checked   bool   `json:"checked"`
-	Available bool   `json:"available"`
-	Name      string `json:"name"`
-	Torch     string `json:"torch"`
+	Checked   bool `json:"checked"`
+	Available bool `json:"available"`
+	// Backend is which accelerator was verified: "cuda", "mps" (Apple Silicon
+	// via Metal) or empty when none works. It is also the device string the
+	// engines take, so callers must not re-derive it — resolving "auto" to
+	// "cuda" unconditionally is what would send a Mac down the CUDA path.
+	Backend string `json:"backend"`
+	Name    string `json:"name"`
+	Torch   string `json:"torch"`
 	// Capability is the card's CUDA compute capability, like "5.2", and Driver
 	// the installed driver version, like "580.173.02". Together they decide
 	// which PyTorch CUDA index can drive this machine, so the UI needs both
@@ -101,6 +106,18 @@ type Resolver struct {
 	get   func() settings.Settings
 	cache map[string]Tool
 	gpu   GPU
+	// gpuInFlight is non-nil while a probe is running and is closed when it
+	// finishes, so a second caller waits for the answer instead of forking its
+	// own. The cache check alone was not enough: it happens before the probe,
+	// and the probe takes seconds, so the startup warm-up and the frontend's
+	// SuggestedAccel both found an unchecked cache and each imported torch —
+	// two multi-hundred-megabyte interpreters, in parallel, at launch.
+	gpuInFlight chan struct{}
+	// probeFn substitutes the expensive probe in tests. nil means the real one.
+	// A seam, because the property worth testing here — that N concurrent
+	// callers cause exactly one probe — cannot be observed through a function
+	// that shells out to Python. Set before any DetectGPU call and never after.
+	probeFn func(ctx context.Context) GPU
 }
 
 func NewResolver(get func() settings.Settings) *Resolver {
@@ -345,10 +362,61 @@ func (r *Resolver) Report(ctx context.Context, checkGPU bool) Report {
 // the device". The only trustworthy answer is to launch a real kernel, which is
 // what the smoke test at the end does.
 const gpuProbe = `import json, torch
-out = {"torch": torch.__version__, "available": False, "name": "", "reason": ""}
+
+
+def smoke(device):
+    """Run what the models run, on this device, and let it raise."""
+    # An elementwise kernel first, then a convolution: the two fail
+    # independently. On CUDA the convolution goes through cuDNN, which breaks on
+    # its own when the bundled cuDNN belongs to another CUDA major; on MPS it is
+    # the op most likely to be missing from an older macOS Metal stack. Testing
+    # only the elementwise one let this report a ready GPU and then die
+    # mid-separation.
+    torch.zeros(64, device=device).add_(1).sum().item()
+    # .sum().item() rather than discarding the result: reading a value back to
+    # the host is what forces the convolution to actually complete. Without it
+    # the only thing making it observable was the synchronize below, which is
+    # skipped whenever the device submodule has none — precisely the torch
+    # 1.12/1.13 window the lookup exists for. A conv that fails at command
+    # buffer commit was then never seen, the probe reported the backend as
+    # verified, and the separation died later anyway.
+    torch.nn.functional.conv1d(
+        torch.zeros(1, 1, 64, device=device),
+        torch.zeros(1, 1, 3, device=device),
+    ).sum().item()
+    # The submodule is named after the device, so this reaches torch.cuda or
+    # torch.mps without a branch. Looked up rather than called directly because
+    # torch.mps only exists from torch 2.0 while the
+    # torch.backends.mps.is_available() gate above dates to 1.12: on a reused
+    # older torch, calling it would raise AttributeError and get reported as
+    # "no GPU" on a machine whose GPU works. An else-branch here was also a
+    # trap for any future smoke("cpu"), which would have run an MPS sync on
+    # Linux.
+    sync = getattr(getattr(torch, device, None), "synchronize", None)
+    if sync is not None:
+        sync()
+
+
+out = {"torch": torch.__version__, "available": False, "backend": "", "name": "", "reason": ""}
 try:
     if not torch.cuda.is_available():
-        out["reason"] = "torch không thấy CUDA"
+        mps = getattr(torch.backends, "mps", None)
+        if mps is not None and mps.is_available():
+            # Apple Silicon: one macOS wheel serves both CPU and GPU, so there
+            # is no arch list to check — either Metal accepts the ops or it does
+            # not, which the smoke test settles.
+            #
+            # No name is set here on purpose: the Go side asks the OS for the
+            # chip ("Apple M2 Pro"), which is both the SoC and the GPU. Filling
+            # a generic string here made that lookup unreachable and rendered
+            # the badge as "GPU · GPU tích hợp Apple (Metal)".
+            smoke("mps")
+            out["backend"] = "mps"
+            out["available"] = True
+        elif mps is not None and mps.is_built():
+            out["reason"] = "máy có Metal nhưng torch không dùng được MPS — cần macOS 12.3+ trên Apple Silicon"
+        else:
+            out["reason"] = "torch không thấy CUDA"
     else:
         out["name"] = torch.cuda.get_device_name(0)
         major, minor = torch.cuda.get_device_capability(0)
@@ -371,21 +439,13 @@ try:
                 % (out["name"], sm, ", ".join(arches))
             )
         else:
-            # Launch an actual kernel; anything less can still fail later.
-            torch.zeros(64, device="cuda").add_(1).sum().item()
-            torch.cuda.synchronize()
-            # And then a convolution, because that is what the models actually
-            # run and it goes through cuDNN, which fails independently of CUDA:
-            # a cuDNN from the wrong CUDA major, or one that dropped this
-            # architecture, breaks convolutions while elementwise kernels keep
-            # working. Testing only the latter is what let this report a ready
-            # GPU and then die mid-separation with "GET was unable to find an
-            # engine to execute this computation".
-            torch.nn.functional.conv1d(
-                torch.zeros(1, 1, 64, device="cuda"),
-                torch.zeros(1, 1, 3, device="cuda"),
-            )
-            torch.cuda.synchronize()
+            # backend is assigned only once the smoke test has passed, so a
+            # non-empty backend implies available. Setting it earlier left a
+            # failed probe advertising a backend it had just proved unusable,
+            # which is the opposite of what the Go doc, types.ts and
+            # docs/engineering.md all promise about this field.
+            smoke("cuda")
+            out["backend"] = "cuda"
             out["available"] = True
 except Exception as exc:
     out["reason"] = "%s: %s" % (type(exc).__name__, exc)
@@ -411,25 +471,56 @@ func (r *Resolver) TorchOutsideVenv(ctx context.Context) bool {
 }
 
 // DetectGPU asks torch whether CUDA is usable. Cached, because importing torch
-// costs several seconds.
+// costs several seconds — and deduplicated while in flight, because "cached"
+// only helps callers that arrive after the first one has finished.
 func (r *Resolver) DetectGPU(ctx context.Context) GPU {
-	r.mu.Lock()
-	if r.gpu.Checked {
-		g := r.gpu
+	for {
+		r.mu.Lock()
+		if r.gpu.Checked {
+			g := r.gpu
+			r.mu.Unlock()
+			return g
+		}
+		if wait := r.gpuInFlight; wait != nil {
+			r.mu.Unlock()
+			select {
+			case <-wait:
+				// Re-read rather than trusting the probe's result directly:
+				// InvalidateAll may have cleared it in between, in which case
+				// this caller should start a fresh probe rather than return a
+				// value the app has already decided is stale.
+				continue
+			case <-ctx.Done():
+				return GPU{Checked: true, Reason: "đã huỷ khi đang kiểm tra GPU"}
+			}
+		}
+		done := make(chan struct{})
+		r.gpuInFlight = done
 		r.mu.Unlock()
+
+		probe := r.probeGPU
+		if r.probeFn != nil {
+			probe = r.probeFn
+		}
+		g := probe(ctx)
+
+		r.mu.Lock()
+		r.gpu = g
+		r.gpuInFlight = nil
+		r.mu.Unlock()
+		close(done)
 		return g
 	}
-	r.mu.Unlock()
+}
 
+// probeGPU runs the actual detection. Split out so DetectGPU holds no lock
+// across it and the in-flight bookkeeping stays in one place.
+func (r *Resolver) probeGPU(ctx context.Context) GPU {
 	g := GPU{Checked: true}
 	py := r.torchPython(ctx)
 	if len(py) == 0 {
 		g.Reason = "chưa tìm thấy PyTorch"
-		r.mu.Lock()
-		r.gpu = describeCard(ctx, g)
-		g = r.gpu
-		r.mu.Unlock()
-		return g
+		return describeCard(ctx, g)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
@@ -445,6 +536,7 @@ func (r *Resolver) DetectGPU(ctx context.Context) GPU {
 		var parsed struct {
 			Torch      string `json:"torch"`
 			Available  bool   `json:"available"`
+			Backend    string `json:"backend"`
 			Name       string `json:"name"`
 			Capability string `json:"capability"`
 			Reason     string `json:"reason"`
@@ -452,7 +544,7 @@ func (r *Resolver) DetectGPU(ctx context.Context) GPU {
 		if jsonErr := json.Unmarshal([]byte(payload), &parsed); jsonErr == nil {
 			g.Torch, g.Available, g.Name, g.Reason =
 				parsed.Torch, parsed.Available, parsed.Name, parsed.Reason
-			g.Capability = parsed.Capability
+			g.Capability, g.Backend = parsed.Capability, parsed.Backend
 		} else {
 			g.Reason = "không đọc được kết quả kiểm tra CUDA"
 		}
@@ -460,12 +552,7 @@ func (r *Resolver) DetectGPU(ctx context.Context) GPU {
 		g.Reason = "kiểm tra CUDA không trả về kết quả"
 	}
 	g.Reason = withArchHint(g.Reason)
-	g = describeCard(ctx, g)
-
-	r.mu.Lock()
-	r.gpu = g
-	r.mu.Unlock()
-	return g
+	return describeCard(ctx, g)
 }
 
 // describeCard fills in whatever the torch probe could not tell us about the
@@ -478,6 +565,15 @@ func (r *Resolver) DetectGPU(ctx context.Context) GPU {
 // an empty capability and a panel with no verdict at all. Card identity is a
 // fact about the machine and does not depend on torch working.
 func describeCard(ctx context.Context, g GPU) GPU {
+	// On Apple Silicon the GPU is part of the SoC, so the chip name is the
+	// answer and there is no capability or driver version to report — a
+	// PyTorch macOS wheel either has MPS or does not.
+	if runtime.GOOS == "darwin" {
+		if g.Name == "" {
+			g.Name = appleChip(ctx)
+		}
+		return g
+	}
 	if g.Capability != "" && g.Name != "" && g.Driver != "" {
 		return g
 	}
@@ -492,6 +588,17 @@ func describeCard(ctx context.Context, g GPU) GPU {
 		g.Driver = driver
 	}
 	return g
+}
+
+// appleChip names the SoC, e.g. "Apple M2 Pro", which on Apple Silicon is also
+// the name of the GPU. Empty on an Intel Mac or when sysctl says nothing, and
+// the caller then leaves the name blank rather than inventing one.
+func appleChip(ctx context.Context) string {
+	if out, ok := probe(ctx, "sysctl", "-n", "machdep.cpu.brand_string"); ok &&
+		strings.HasPrefix(out, "Apple ") {
+		return out
+	}
+	return ""
 }
 
 // smiCard asks the driver for the card's name, compute capability and driver

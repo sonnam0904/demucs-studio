@@ -118,6 +118,15 @@ type Bootstrap struct {
 	OutputDir  string            `json:"outputDir"`
 	CPUs       int               `json:"cpus"`
 	AppVersion string            `json:"appVersion"`
+	// Accels and Devices are the values this machine may be offered, decided by
+	// settings.AccelApplies — the same rule the store normalises a copied
+	// settings file with and the installer refuses by. Shipped as data because
+	// the frontend used to re-derive it from the platform string, which made
+	// the UI a third implementation of the rule, and the one that decides what
+	// the user can click: when it drifted, the panel offered MPS on Linux and
+	// picking it replaced a working CUDA torch with the CPU wheel.
+	Accels  []string `json:"accels"`
+	Devices []string `json:"devices"`
 }
 
 func (a *App) Bootstrap() Bootstrap {
@@ -132,6 +141,8 @@ func (a *App) Bootstrap() Bootstrap {
 		OutputDir:  a.settings.Get().OutputDir,
 		CPUs:       runtime.NumCPU(),
 		AppVersion: appVersion,
+		Accels:     settings.AccelsFor(runtime.GOOS, runtime.GOARCH),
+		Devices:    settings.DevicesFor(runtime.GOOS, runtime.GOARCH),
 	}
 }
 
@@ -241,6 +252,62 @@ func (a *App) CudaTargets() []deps.CudaTarget {
 	return deps.CudaTargetsFor(g.Capability, g.Driver)
 }
 
+// deviceNote is a line resolveDevice wants shown, kept as data so the decision
+// stays a pure function the tests can drive.
+type deviceNote struct{ level, text string }
+
+// resolveDevice turns the stored device preference into the exact string an
+// engine backend will receive, plus whatever the user needs told about it.
+//
+// Always explicit, never "auto": both engines fall back to their own
+// torch.cuda.is_available() check, which is the very thing that crashes on a
+// GPU whose torch has no kernels for it.
+//
+// Whether a backend can actually honour the answer is the backend's own
+// business — audio-separator uses MPS no matter what it is handed, and it says
+// so itself. Deciding that here would mean gating on gpu.Backend, which is only
+// filled in once the probe passes, so the caveat would go missing on precisely
+// the Mac where MPS is broken and the user picked CPU to escape it.
+func resolveDevice(preference string, gpu deps.GPU) (string, []deviceNote) {
+	var notes []deviceNote
+	warn := func(format string, args ...any) {
+		notes = append(notes, deviceNote{bus.LevelWarn, fmt.Sprintf(format, args...)})
+	}
+
+	device := preference
+	switch preference {
+	case "auto":
+		// gpu.Backend, not a hardcoded "cuda": the verified accelerator is
+		// "mps" on Apple Silicon, and resolving auto to cuda there would send a
+		// Mac down a path its torch has no CUDA for. The Backend != "" guard
+		// keeps a payload that claims availability without naming a backend
+		// from producing an empty device, which every downstream consumer
+		// silently drops — handing the choice back to the engine.
+		if gpu.Available && gpu.Backend != "" {
+			device = gpu.Backend
+		} else {
+			device = "cpu"
+			if gpu.Reason != "" {
+				notes = append(notes, deviceNote{bus.LevelInfo, "Dùng CPU: " + gpu.Reason})
+			}
+		}
+	case "cuda", "mps":
+		// A saved choice can outlive the machine it was made on — settings
+		// travel with the data directory — so the requested backend has to
+		// match what actually works here, not merely be some working GPU.
+		if !gpu.Available || gpu.Backend != device {
+			warn("Đã chọn %s nhưng không dùng được (%s) — chuyển sang CPU.", device, orDash(gpu.Reason))
+			device = "cpu"
+		}
+	case "cpu":
+	default:
+		warn("Thiết bị %q không hợp lệ — dùng CPU.", preference)
+		device = "cpu"
+	}
+
+	return device, notes
+}
+
 // --- self-update ------------------------------------------------------------
 
 // CheckUpdate asks GitHub whether a newer release exists. The UI calls it once
@@ -304,8 +371,20 @@ func (a *App) SuggestedAccel() string {
 	if a.resolver.DetectGPU(ctx).Available && a.resolver.TorchOutsideVenv(ctx) {
 		return "reuse"
 	}
-	if _, err := exec.LookPath("nvidia-smi"); err == nil {
-		return "cuda"
+	// Apple Silicon has a usable GPU on every unit, and the macOS wheel always
+	// carries Metal support, so there is nothing to detect. Asked of
+	// AccelApplies rather than spelling out "darwin && arm64" again: this
+	// function suggests what the store will later normalise and the installer
+	// will later accept, so a fourth copy of the rule here could only ever
+	// disagree with those two — and would do it by preselecting a flavour the
+	// install then refuses.
+	if settings.AccelApplies(runtime.GOOS, runtime.GOARCH, "mps") {
+		return "mps"
+	}
+	if settings.AccelApplies(runtime.GOOS, runtime.GOARCH, "cuda") {
+		if _, err := exec.LookPath("nvidia-smi"); err == nil {
+			return "cuda"
+		}
 	}
 	return "cpu"
 }
@@ -441,24 +520,9 @@ func (a *App) Separate(inputPath, modelID string) (engine.Result, error) {
 		// decide: both engines default to CUDA whenever torch reports it
 		// available, which is exactly the case that crashes on GPUs the
 		// installed torch has no kernels for.
-		gpu := a.resolver.DetectGPU(ctx)
-		device := set.Device
-		switch device {
-		case "auto":
-			if gpu.Available {
-				device = "cuda"
-			} else {
-				device = "cpu"
-				if gpu.Reason != "" {
-					a.bus.Logf(bus.LevelInfo, "Dùng CPU: %s", gpu.Reason)
-				}
-			}
-		case "cuda":
-			if !gpu.Available {
-				a.bus.Logf(bus.LevelWarn, "Đã chọn GPU nhưng không dùng được (%s) — chuyển sang CPU.",
-					orDash(gpu.Reason))
-				device = "cpu"
-			}
+		device, notes := resolveDevice(set.Device, a.resolver.DetectGPU(ctx))
+		for _, n := range notes {
+			a.bus.Log(n.level, n.text)
 		}
 
 		got, err := backend.Separate(ctx, engine.Request{

@@ -100,6 +100,7 @@ export namespace deps {
 	export class GPU {
 	    checked: boolean;
 	    available: boolean;
+	    backend: string;
 	    name: string;
 	    torch: string;
 	    capability: string;
@@ -114,6 +115,7 @@ export namespace deps {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.checked = source["checked"];
 	        this.available = source["available"];
+	        this.backend = source["backend"];
 	        this.name = source["name"];
 	        this.torch = source["torch"];
 	        this.capability = source["capability"];
@@ -300,6 +302,8 @@ export namespace main {
 	    outputDir: string;
 	    cpus: number;
 	    appVersion: string;
+	    accels: string[];
+	    devices: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Bootstrap(source);
@@ -316,6 +320,8 @@ export namespace main {
 	        this.outputDir = source["outputDir"];
 	        this.cpus = source["cpus"];
 	        this.appVersion = source["appVersion"];
+	        this.accels = source["accels"];
+	        this.devices = source["devices"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

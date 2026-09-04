@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -217,5 +218,38 @@ func TestDemucsModelsOfferStemChoice(t *testing.T) {
 		if !m.TwoStemsOption {
 			t.Errorf("%s should honour the stem choice (demucs takes --two-stems)", m.Name)
 		}
+	}
+}
+
+func TestDeviceArgs(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		device string
+		jobs   int
+		want   []string
+	}{
+		// Apple Silicon's Metal backend needs no special case: demucs takes any
+		// torch device string.
+		{"mps được truyền thẳng", "mps", 1, []string{"-d", "mps"}},
+		{"cuda", "cuda", 1, []string{"-d", "cuda"}},
+		{"cpu", "cpu", 1, []string{"-d", "cpu"}},
+		// --jobs forks workers and only helps on CPU. On a GPU backend they
+		// would contend for the same accelerator.
+		{"jobs chỉ trên cpu", "cpu", 4, []string{"-d", "cpu", "-j", "4"}},
+		{"jobs bị bỏ trên mps", "mps", 4, []string{"-d", "mps"}},
+		{"jobs bị bỏ trên cuda", "cuda", 4, []string{"-d", "cuda"}},
+		// An unresolved or unknown device is not forwarded: the app resolves
+		// "auto" before it gets here, and passing it through would let demucs
+		// fall back to its own is_available() detection.
+		{"auto không được truyền", "auto", 1, nil},
+		{"device lạ bị bỏ", "rocm", 2, nil},
+		{"rỗng", "", 1, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := deviceArgs(tc.device, tc.jobs)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("deviceArgs(%q, %d) = %v, want %v", tc.device, tc.jobs, got, tc.want)
+			}
+		})
 	}
 }

@@ -347,9 +347,16 @@ func TestRoformerRefresh(t *testing.T) {
 	}
 }
 
+// deviceForTest picks the device the e2e run should use, the same way the app
+// does: from the accelerator the probe actually verified.
+//
+// Hardcoding "cuda" here made the suite unrunnable on Apple Silicon, where
+// Backend is "mps" — demucs would be handed -d cuda and die with "Torch not
+// compiled with CUDA enabled". The Backend != "" guard mirrors resolveDevice:
+// an empty backend means nothing was verified, whatever Available says.
 func deviceForTest(ctx context.Context, resolver *deps.Resolver) string {
-	if g := resolver.DetectGPU(ctx); g.Available {
-		return "cuda"
+	if g := resolver.DetectGPU(ctx); g.Available && g.Backend != "" {
+		return g.Backend
 	}
 	return "cpu"
 }

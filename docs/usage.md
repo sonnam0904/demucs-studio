@@ -25,8 +25,12 @@ biết nên lấy cái nào.
 ### 3 · Chọn thiết bị và stem
 
 **Thiết bị** cứ để *Tự động* — app tự kiểm tra GPU rồi quyết định. Nó không chỉ
-hỏi `torch.cuda.is_available()` mà còn chạy thử một CUDA kernel thật, nên card cũ
-sẽ bị loại ngay từ đầu thay vì chết giữa lúc đang tách.
+hỏi `torch.cuda.is_available()` mà còn chạy thử một kernel **và một
+convolution** thật, nên card cũ hoặc cuDNN sai bản sẽ bị loại ngay từ đầu thay
+vì chết giữa lúc đang tách.
+
+Trên máy Apple Silicon, *Tự động* chọn **MPS** — GPU tích hợp của chip M — và ô
+Thiết bị hiện thêm lựa chọn *GPU Apple (MPS)*. Mac Intel không có MPS.
 
 **Stem** quyết định tách ra bao nhiêu file:
 
