@@ -1,3 +1,10 @@
+# [1.3.0](https://github.com/sonnam0904/demucs-studio/compare/v1.2.0...v1.3.0) (2026-09-04)
+
+
+### Features
+
+* Enhance GPU support and device resolution logic ([30a3a53](https://github.com/sonnam0904/demucs-studio/commit/30a3a5398f03f2d03d6a8fa6a4a61e2ab5e4fc74))
+
 # [1.2.0](https://github.com/sonnam0904/demucs-studio/compare/v1.1.1...v1.2.0) (2026-09-03)
 
 
