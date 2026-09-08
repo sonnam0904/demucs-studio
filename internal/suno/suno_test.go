@@ -1,12 +1,14 @@
 package suno
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsURL(t *testing.T) {
@@ -114,28 +116,117 @@ func TestMediaURLSkipsForbiddenPlaceholder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extractClip: %v", err)
 	}
-	if got := c.mediaURL(); got != "https://cdn1.suno.ai/080b4f6b.mp4" {
+	if got := c.mediaURL(context.Background()); got != "https://cdn1.suno.ai/080b4f6b.mp4" {
 		t.Errorf("mediaURL = %q, want the video_url", got)
 	}
 }
 
-// media_urls is last on purpose: its m4a downloads with a 200 and the right
-// length but has no moov atom, so ffmpeg cannot transcode it.
-func TestMediaURLPrefersVideoOverMediaURLs(t *testing.T) {
+// media_urls is last on purpose, and is only reached when the plain URLs are
+// gone — it is Suno's encrypted player stream far more often than a file.
+func TestMediaURLPrefersPlainURLs(t *testing.T) {
 	var c clip
 	c.VideoURL = "https://cdn1.suno.ai/x.mp4"
 	c.MediaURLs = append(c.MediaURLs, struct {
 		URL         string `json:"url"`
 		ContentType string `json:"content_type"`
 	}{URL: "https://cdn.example/x.m4a", ContentType: "m4a-opus"})
-	if got := c.mediaURL(); got != c.VideoURL {
+	// No probe should happen here: video_url wins outright, and reaching the
+	// network for an unreachable host would hang or fail the test.
+	if got := c.mediaURL(context.Background()); got != c.VideoURL {
 		t.Errorf("mediaURL = %q, want %q", got, c.VideoURL)
 	}
 
 	c.AudioURL = "https://cdn1.suno.ai/x.mp3"
-	if got := c.mediaURL(); got != c.AudioURL {
+	if got := c.mediaURL(context.Background()); got != c.AudioURL {
 		t.Errorf("a real audio_url must win, got %q", got)
 	}
+}
+
+// The failing case that prompted this: a private song has no video_url, and its
+// one media_urls entry serves encrypted bytes. Trusting it cost a multi-megabyte
+// download that died in yt-dlp post-processing with "unable to obtain file audio
+// codec" — no hint that the song's privacy was the problem.
+func TestMediaURLRejectsEncryptedStream(t *testing.T) {
+	encrypted := serveBytes(t, []byte{0xa4, 0x8e, 0xee, 0xbd, 0x7b, 0x56, 0xb3, 0x53,
+		0xf6, 0xec, 0xa8, 0x79, 0x6d, 0x47, 0x4b, 0xd1})
+	var c clip
+	c.MediaURLs = append(c.MediaURLs, struct {
+		URL         string `json:"url"`
+		ContentType string `json:"content_type"`
+	}{URL: encrypted, ContentType: "m4a-opus"})
+	if got := c.mediaURL(context.Background()); got != "" {
+		t.Errorf("mediaURL = %q, want empty for an encrypted stream", got)
+	}
+
+	// A real container at the same spot must still be used.
+	real := serveBytes(t, append([]byte{0, 0, 0, 0x20}, []byte("ftypM4A ....")...))
+	c.MediaURLs[0].URL = real
+	if got := c.mediaURL(context.Background()); got != real {
+		t.Errorf("mediaURL = %q, want %q", got, real)
+	}
+}
+
+func TestIsContainer(t *testing.T) {
+	yes := map[string][]byte{
+		"mp4/m4a": append([]byte{0, 0, 0, 0x20}, []byte("ftypM4A ")...),
+		"mp3 id3": []byte("ID3\x04\x00\x00\x00\x00\x00"),
+		"ogg":     []byte("OggS\x00\x02\x00\x00"),
+		"wav":     []byte("RIFF\x24\x08\x00\x00WAVE"),
+		"flac":    []byte("fLaC\x00\x00\x00\x22"),
+		"mp3 raw": {0xFF, 0xFB, 0x90, 0x64},
+	}
+	for name, b := range yes {
+		if !isContainer(b) {
+			t.Errorf("%s: isContainer = false, want true", name)
+		}
+	}
+	no := map[string][]byte{
+		"suno encrypted": {0xa4, 0x8e, 0xee, 0xbd, 0x7b, 0x56, 0xb3, 0x53},
+		"html error":     []byte("<!DOCTYPE html>"),
+		"empty":          {},
+		"one byte":       {0xFF},
+	}
+	for name, b := range no {
+		if isContainer(b) {
+			t.Errorf("%s: isContainer = true, want false", name)
+		}
+	}
+}
+
+// A non-public song gets an extra instruction, but the message must never claim
+// the song is inaccessible: is_public=false still opens and still plays for
+// anyone with the link, so "riêng tư" would contradict what the user sees.
+func TestUnavailableErr(t *testing.T) {
+	no, yes := false, true
+
+	notPublic := (clip{IsPublic: &no}).unavailableErr().Error()
+	if !strings.Contains(notPublic, "Public") {
+		t.Errorf("a non-public song should say how to fix it: %v", notPublic)
+	}
+	for _, err := range []string{
+		notPublic,
+		(clip{IsPublic: &yes}).unavailableErr().Error(),
+		(clip{}).unavailableErr().Error(),
+	} {
+		if strings.Contains(err, "riêng tư") {
+			t.Errorf("must not claim the song is inaccessible: %v", err)
+		}
+		// Every variant has to name a way out, or it is just a dead end.
+		if !strings.Contains(err, "chọn file audio có sẵn") {
+			t.Errorf("no actionable fallback offered: %v", err)
+		}
+	}
+}
+
+// serveBytes returns a URL serving exactly these bytes, honouring Range so the
+// probe reads only the head.
+func serveBytes(t *testing.T, body []byte) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "clip.m4a", time.Time{}, bytes.NewReader(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL + "/clip.m4a"
 }
 
 func TestResolve(t *testing.T) {

@@ -451,14 +451,16 @@ func (a *App) Download(url string) (ytdl.Track, error) {
 		set := a.settings.Get()
 		jsRuntime := a.resolver.JSRuntimeSpec(ctx)
 
-		// What yt-dlp is actually pointed at. For Suno that is not the link the
-		// user pasted: yt-dlp refuses suno.com by name, so the page is resolved
-		// here to a direct CDN URL first.
+		// What yt-dlp is actually pointed at. For YouTube that is the pasted
+		// link, and ytdl.Download extracts the metadata itself as it goes. Suno
+		// needs a step first: yt-dlp refuses suno.com by name, so the page is
+		// resolved here to a direct CDN URL — which then carries no metadata of
+		// its own, so the resolved song supplies it.
 		source := ytdl.SourceYouTube
 		fetchURL := url
 		filenameBase := ""
+		var sunoMeta ytdl.Info
 
-		var info ytdl.Info
 		if suno.IsURL(url) {
 			source = "Suno"
 			a.bus.Progress(bus.Progress{Phase: "download", Percent: -1, Label: "Đang đọc trang Suno"})
@@ -466,25 +468,10 @@ func (a *App) Download(url string) (ytdl.Track, error) {
 			if err != nil {
 				return err
 			}
-			info = sunoInfo(song)
+			sunoMeta = sunoInfo(song)
 			fetchURL = song.MediaURL
 			filenameBase = song.Title
-			a.bus.Logf(bus.LevelInfo, "Suno: %s — %s", info.Title, info.Uploader)
-		} else {
-			// Best-effort metadata first, so the card can show a title even if
-			// the filename gets mangled.
-			got, infoErr := ytdl.FetchInfo(ctx, ytdl.Options{
-				YtDlp:              tool.Path,
-				URL:                url,
-				CookiesFromBrowser: set.CookiesFromBrowser,
-				JSRuntime:          jsRuntime,
-			}, a.reporter())
-			if infoErr != nil {
-				a.bus.Logf(bus.LevelWarn, "Không đọc được metadata: %v", infoErr)
-			} else if got.IsLive {
-				return errors.New("đây là livestream đang phát; không thể tải thành file audio")
-			}
-			info = got
+			a.bus.Logf(bus.LevelInfo, "Suno: %s — %s", sunoMeta.Title, sunoMeta.Uploader)
 		}
 
 		outDir := filepath.Join(set.OutputDir, "downloads")
@@ -503,10 +490,10 @@ func (a *App) Download(url string) (ytdl.Track, error) {
 		if err != nil {
 			return err
 		}
-		got.Info = info
-		got.Duration = info.Duration
-		if info.Title != "" {
-			got.Title = info.Title
+		if sunoMeta.Title != "" {
+			got.Info = sunoMeta
+			got.Duration = sunoMeta.Duration
+			got.Title = sunoMeta.Title
 		}
 		track = got
 		a.media.Allow(got.Path)

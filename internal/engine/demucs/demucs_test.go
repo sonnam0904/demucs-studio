@@ -2,6 +2,7 @@ package demucs
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -253,3 +254,50 @@ func TestDeviceArgs(t *testing.T) {
 		})
 	}
 }
+
+// demucs exits 1 on --segment above 7.8 for every model this app ships, and the
+// UI used to offer up to 120. A stored 20 turned every separation into "demucs
+// failed: exit status 1" with the real cause buried in the log.
+func TestSegmentArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		segment  int
+		want     []string
+		wantWarn bool
+	}{
+		{"unset means model default", 0, nil, false},
+		{"negative is ignored", -5, nil, false},
+		{"in range is passed through", 5, []string{"--segment", "5"}, false},
+		{"at the limit", 7, []string{"--segment", "7"}, false},
+		{"just over is clamped", 8, []string{"--segment", "7"}, true},
+		{"the old UI maximum is clamped", 120, []string{"--segment", "7"}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var rep recorder
+			got := segmentArgs(tc.segment, &rep)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+			// A clamp changes what the user asked for, so it has to say so.
+			if warned := len(rep.warnings) > 0; warned != tc.wantWarn {
+				t.Errorf("warned = %v, want %v (warnings: %q)", warned, tc.wantWarn, rep.warnings)
+			}
+		})
+	}
+}
+
+// recorder captures the warnings a backend emits.
+type recorder struct{ warnings []string }
+
+func (r *recorder) Log(level, text string) {
+	if level == "warn" {
+		r.warnings = append(r.warnings, text)
+	}
+}
+
+func (r *recorder) Logf(level, format string, args ...any) {
+	r.Log(level, fmt.Sprintf(format, args...))
+}
+
+func (r *recorder) Step(string, float64, string, string) {}

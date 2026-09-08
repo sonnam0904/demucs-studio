@@ -264,6 +264,33 @@ func deviceArgs(device string, jobs int) []string {
 	return args
 }
 
+// maxSegment is the longest --segment a Hybrid Transformer model accepts.
+// demucs refuses anything above the 7.8 seconds it was trained on — "Cannot use
+// a Transformer model with a longer segment than it was trained for" — and
+// exits 1. Every Demucs model this app offers (htdemucs, htdemucs_ft,
+// htdemucs_6s) is one, so the cap is unconditional here. Whole seconds, because
+// the setting is an int.
+const maxSegment = 7
+
+// segmentArgs builds --segment, holding it inside what the model can take.
+//
+// Clamping rather than failing: the value can arrive from a settings file
+// carried over from another machine, and it is a hint about chunk size, not a
+// number the user needs honoured exactly. Left unclamped it cost the whole run
+// — demucs died before the first chunk, and all the UI could report was
+// "demucs failed: exit status 1".
+func segmentArgs(segment int, r engine.Reporter) []string {
+	if segment <= 0 {
+		return nil
+	}
+	if segment > maxSegment {
+		r.Logf("warn", "Segment %d giây vượt giới hạn %d của model Transformer; dùng %d.",
+			segment, maxSegment, maxSegment)
+		segment = maxSegment
+	}
+	return []string{"--segment", fmt.Sprint(segment)}
+}
+
 // Separate runs demucs and reports progress derived from its tqdm bars.
 func (b *Backend) Separate(ctx context.Context, req engine.Request, r engine.Reporter) (engine.Result, error) {
 	argv := b.Argv(ctx)
@@ -287,9 +314,7 @@ func (b *Backend) Separate(ctx context.Context, req engine.Request, r engine.Rep
 		"--shifts", fmt.Sprint(req.Shifts),
 	)
 	args = append(args, deviceArgs(req.Device, req.Jobs)...)
-	if req.Segment > 0 {
-		args = append(args, "--segment", fmt.Sprint(req.Segment))
-	}
+	args = append(args, segmentArgs(req.Segment, r)...)
 	if req.TwoStems {
 		args = append(args, "--two-stems", "vocals")
 	}

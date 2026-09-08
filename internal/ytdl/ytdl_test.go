@@ -246,3 +246,89 @@ func TestOutputTemplateTruncatesOnRuneBoundary(t *testing.T) {
 		t.Errorf("truncation split a rune: %q", base)
 	}
 }
+
+// Download reads its metadata from the field subset it asks yt-dlp to print,
+// not from --dump-single-json, so both shapes have to land in the same struct.
+func TestParseInfo(t *testing.T) {
+	const printed = `{"id": "dQw4w9WgXcQ", "title": "Never Gonna Give You Up", ` +
+		`"uploader": "Rick Astley", "channel": "Rick Astley", "duration": 213, ` +
+		`"thumbnail": "https://i.ytimg.com/x.webp", ` +
+		`"webpage_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "is_live": false}`
+	raw, err := parseInfo(printed + "\n")
+	if err != nil {
+		t.Fatalf("parseInfo: %v", err)
+	}
+	got := raw.info()
+	if got.Title != "Never Gonna Give You Up" || got.Duration != 213 || got.Uploader != "Rick Astley" {
+		t.Errorf("got %+v", got)
+	}
+
+	// The generic extractor — what a resolved CDN link uses — omits every field
+	// it has no value for. That must parse, not error.
+	raw, err = parseInfo(`{"id": "abc", "title": "abc", "webpage_url": "https://cdn/x.mp4"}`)
+	if err != nil {
+		t.Fatalf("sparse metadata: %v", err)
+	}
+	if got := raw.info(); got.ID != "abc" || got.Duration != 0 || got.IsLive {
+		t.Errorf("got %+v", got)
+	}
+
+	// uploader is the display name; yt-dlp leaves it empty on some extractors
+	// and only fills channel.
+	raw, _ = parseInfo(`{"channel": "Some Channel"}`)
+	if got := raw.info(); got.Uploader != "Some Channel" {
+		t.Errorf("Uploader = %q, want the channel fallback", got.Uploader)
+	}
+
+	if _, err := parseInfo("not json"); err == nil {
+		t.Error("expected an error for unparseable output")
+	}
+}
+
+// yt-dlp exits 0 after --match-filter rejects a URL, so the skip is only
+// visible in its output. Missing it would surface as "yt-dlp did not report an
+// output path" instead of "this is a livestream".
+func TestLiveSkipMarkerMatchesYtDlpOutput(t *testing.T) {
+	const line = "[download] Some Stream does not pass filter (!is_live), skipping .."
+	if !strings.Contains(line, liveSkipMarker) {
+		t.Errorf("liveSkipMarker %q does not match yt-dlp's message", liveSkipMarker)
+	}
+	if !strings.Contains(liveSkipMarker, liveFilter) {
+		t.Error("the marker must be derived from the filter, so the two cannot drift")
+	}
+}
+
+func TestReadInfoFile(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "info.json")
+	if err := os.WriteFile(name, []byte(`{"title":"Bài hát","duration":42}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readInfoFile(name, discardReporter{}); got.Title != "Bài hát" || got.Duration != 42 {
+		t.Errorf("got %+v", got)
+	}
+
+	// Metadata is a nicety next to the audio file. Neither a missing file nor
+	// garbage in it may cost the caller a completed download.
+	if got := readInfoFile(filepath.Join(dir, "absent.json"), discardReporter{}); got != (Info{}) {
+		t.Errorf("missing file should yield a zero Info, got %+v", got)
+	}
+	if err := os.WriteFile(name, []byte("  \n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readInfoFile(name, discardReporter{}); got != (Info{}) {
+		t.Errorf("empty file should yield a zero Info, got %+v", got)
+	}
+	if err := os.WriteFile(name, []byte("{oops"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readInfoFile(name, discardReporter{}); got != (Info{}) {
+		t.Errorf("malformed file should yield a zero Info, got %+v", got)
+	}
+}
+
+type discardReporter struct{}
+
+func (discardReporter) Log(string, string)                   {}
+func (discardReporter) Logf(string, string, ...any)          {}
+func (discardReporter) Step(string, float64, string, string) {}

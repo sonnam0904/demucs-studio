@@ -171,6 +171,20 @@ const progressTemplate = "download:" + progressPrefix +
 	"%(progress._percent_str)s|%(progress._downloaded_bytes_str)s|" +
 	"%(progress._total_bytes_estimate_str)s|%(progress._speed_str)s|%(progress._eta_str)s"
 
+// infoTemplate makes yt-dlp emit exactly the metadata fields Info holds, as one
+// JSON object. The ".{…}" subset selector keeps it to those fields and the "j"
+// conversion serialises them, so the result parses with the same struct as
+// --dump-single-json. Fields the extractor never set are simply absent.
+const infoTemplate = "%(.{id,title,uploader,channel,duration,thumbnail,webpage_url,is_live})j"
+
+// liveFilter is the --match-filter expression that refuses a live stream.
+const liveFilter = "!is_live"
+
+// liveSkipMarker is what yt-dlp prints when liveFilter rejects the URL. It exits
+// 0 and downloads nothing, so without spotting this the caller would only see
+// "yt-dlp did not report an output path" — true, but useless.
+const liveSkipMarker = "does not pass filter (" + liveFilter + ")"
+
 // FetchInfo resolves title/duration/thumbnail without downloading media.
 func FetchInfo(ctx context.Context, o Options, r Reporter) (Info, error) {
 	if o.YtDlp == "" {
@@ -203,36 +217,52 @@ func FetchInfo(ctx context.Context, o Options, r Reporter) (Info, error) {
 		return Info{}, explainFailure(wrapped, stderr, o.JSRuntime != "", o.source())
 	}
 
-	var raw struct {
-		ID         string  `json:"id"`
-		Title      string  `json:"title"`
-		Uploader   string  `json:"uploader"`
-		Channel    string  `json:"channel"`
-		Duration   float64 `json:"duration"`
-		Thumbnail  string  `json:"thumbnail"`
-		WebpageURL string  `json:"webpage_url"`
-		IsLive     bool    `json:"is_live"`
-		Type       string  `json:"_type"`
-	}
-	if err := json.Unmarshal([]byte(out), &raw); err != nil {
-		return Info{}, fmt.Errorf("không phân tích được JSON của yt-dlp: %w", err)
+	raw, err := parseInfo(out)
+	if err != nil {
+		return Info{}, err
 	}
 	if raw.Type == "playlist" {
 		return Info{}, errors.New("URL này là playlist; hãy dùng link của một video cụ thể")
 	}
-	uploader := raw.Uploader
+	return raw.info(), nil
+}
+
+// rawInfo is the JSON both metadata paths produce: --dump-single-json here, and
+// the --print-to-file field subset that Download writes during its own run.
+type rawInfo struct {
+	ID         string  `json:"id"`
+	Title      string  `json:"title"`
+	Uploader   string  `json:"uploader"`
+	Channel    string  `json:"channel"`
+	Duration   float64 `json:"duration"`
+	Thumbnail  string  `json:"thumbnail"`
+	WebpageURL string  `json:"webpage_url"`
+	IsLive     bool    `json:"is_live"`
+	Type       string  `json:"_type"`
+}
+
+func (r rawInfo) info() Info {
+	uploader := r.Uploader
 	if uploader == "" {
-		uploader = raw.Channel
+		uploader = r.Channel
 	}
 	return Info{
-		ID:         raw.ID,
-		Title:      raw.Title,
+		ID:         r.ID,
+		Title:      r.Title,
 		Uploader:   uploader,
-		Duration:   raw.Duration,
-		Thumbnail:  raw.Thumbnail,
-		WebpageURL: raw.WebpageURL,
-		IsLive:     raw.IsLive,
-	}, nil
+		Duration:   r.Duration,
+		Thumbnail:  r.Thumbnail,
+		WebpageURL: r.WebpageURL,
+		IsLive:     r.IsLive,
+	}
+}
+
+func parseInfo(out string) (rawInfo, error) {
+	var raw rawInfo
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &raw); err != nil {
+		return rawInfo{}, fmt.Errorf("không phân tích được JSON của yt-dlp: %w", err)
+	}
+	return raw, nil
 }
 
 // Download fetches the best audio stream and transcodes it to o.Format.
@@ -260,6 +290,17 @@ func Download(ctx context.Context, o Options, r Reporter) (Track, error) {
 	pathFile.Close()
 	defer os.Remove(pathFile.Name())
 
+	// Metadata comes out of this same run. It used to take a second yt-dlp
+	// process ahead of the download — measured at 3.2s against YouTube, ~40% of
+	// the step — which re-fetched the page and re-solved the JS challenge only
+	// to learn what this run extracts anyway.
+	infoFile, err := os.CreateTemp("", "ytdlp-info-*.json")
+	if err != nil {
+		return Track{}, err
+	}
+	infoFile.Close()
+	defer os.Remove(infoFile.Name())
+
 	// "0" means best VBR quality; for MP3 an explicit bitrate is friendlier.
 	quality := "0"
 	if o.Format == "mp3" && o.Mp3Bitrate > 0 {
@@ -280,6 +321,13 @@ func Download(ctx context.Context, o Options, r Reporter) (Track, error) {
 		"--postprocessor-args", "ExtractAudio:-ac 2 -ar 44100",
 		"-o", outputTemplate(o),
 		"--print-to-file", "after_move:filepath", pathFile.Name(),
+		"--print-to-file", "after_move:"+infoTemplate, infoFile.Name(),
+		// The livestream guard. It used to be a check on the pre-flight
+		// metadata; letting yt-dlp apply it keeps a live URL from downloading
+		// forever without costing a second extraction. A source whose extractor
+		// never sets is_live — the generic one, which is what a resolved CDN
+		// link uses — passes, since "!field" also means "absent".
+		"--match-filter", liveFilter,
 		// Without this, re-running the same URL skips post-processing, so
 		// nothing is written to the path file and we cannot tell the caller
 		// where the audio ended up.
@@ -292,12 +340,16 @@ func Download(ctx context.Context, o Options, r Reporter) (Track, error) {
 	r.Step("download", -1, "Đang kết nối "+o.source(), "")
 
 	converting := false
+	skippedLive := false
 	var stderr []string
 	runErr := proc.Run(ctx, proc.Options{
 		Bin:         o.YtDlp,
 		Args:        args,
 		PrependPath: []string{o.FfmpegDir},
 		OnLine: func(stream, line string) {
+			if strings.Contains(line, liveSkipMarker) {
+				skippedLive = true
+			}
 			if rest, ok := strings.CutPrefix(line, progressPrefix); ok {
 				pct, detail := parseProgress(rest)
 				// Downloading is ~85% of the perceived work; transcoding the
@@ -324,6 +376,9 @@ func Download(ctx context.Context, o Options, r Reporter) (Track, error) {
 	if runErr != nil {
 		return Track{}, explainFailure(runErr, stderr, o.JSRuntime != "", o.source())
 	}
+	if skippedLive {
+		return Track{}, errors.New("đây là livestream đang phát; không thể tải thành file audio")
+	}
 
 	finalPath, err := readPathFile(pathFile.Name())
 	if err != nil {
@@ -335,13 +390,45 @@ func Download(ctx context.Context, o Options, r Reporter) (Track, error) {
 	}
 
 	r.Step("download", 1, "Tải xong", filepath.Base(finalPath))
+	// The filename is the fallback title: it is always there, whereas metadata
+	// is best-effort — a generic-extractor source may report almost nothing.
 	title := strings.TrimSuffix(filepath.Base(finalPath), filepath.Ext(finalPath))
+	info := readInfoFile(infoFile.Name(), r)
+	// A caller that supplied FilenameBase already knows the real title, and
+	// yt-dlp does not: on a direct CDN link the generic extractor derives
+	// "title" from the URL basename, so letting it win here turned a resolved
+	// Suno song back into its UUID.
+	if info.Title != "" && o.FilenameBase == "" {
+		title = info.Title
+	}
 	return Track{
 		Path:      finalPath,
 		Title:     title,
 		Format:    strings.TrimPrefix(strings.ToLower(filepath.Ext(finalPath)), "."),
 		SizeBytes: st.Size(),
+		Duration:  info.Duration,
+		Info:      info,
 	}, nil
+}
+
+// readInfoFile reads the metadata yt-dlp printed during the download. Metadata
+// is a nicety next to the audio file itself, so a failure here is logged and
+// swallowed rather than throwing away a completed download.
+func readInfoFile(name string, r Reporter) Info {
+	body, err := os.ReadFile(name)
+	if err != nil {
+		r.Logf("warn", "Không đọc được metadata: %v", err)
+		return Info{}
+	}
+	if strings.TrimSpace(string(body)) == "" {
+		return Info{}
+	}
+	raw, err := parseInfo(string(body))
+	if err != nil {
+		r.Logf("warn", "%v", err)
+		return Info{}
+	}
+	return raw.info()
 }
 
 // outputTemplate builds the -o value. yt-dlp's own title is the right name for

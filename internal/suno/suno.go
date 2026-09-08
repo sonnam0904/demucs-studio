@@ -74,10 +74,9 @@ func Resolve(ctx context.Context, raw string) (Song, error) {
 	if err != nil {
 		return Song{}, err
 	}
-	media := c.mediaURL()
+	media := c.mediaURL(ctx)
 	if media == "" {
-		return Song{}, errors.New("trang Suno này không công khai link audio; " +
-			"hãy kiểm tra bài hát đã được chia sẻ công khai chưa")
+		return Song{}, c.unavailableErr()
 	}
 	return Song{
 		ID:         c.ID,
@@ -132,7 +131,10 @@ type clip struct {
 	ImageLargeURL string `json:"image_large_url"`
 	AudioURL      string `json:"audio_url"`
 	VideoURL      string `json:"video_url"`
-	MediaURLs     []struct {
+	// IsPublic is a pointer so that "field absent" stays distinguishable from
+	// "explicitly false" — only the latter justifies blaming the song's privacy.
+	IsPublic  *bool `json:"is_public"`
+	MediaURLs []struct {
 		URL         string `json:"url"`
 		ContentType string `json:"content_type"`
 	} `json:"media_urls"`
@@ -153,12 +155,10 @@ func (c clip) uploader() string {
 // Order matters. audio_url is the real audio when the song is public, but for a
 // signed-out visitor Suno substitutes a placeholder pointing at its own
 // /api/forbidden, so it has to be sanity-checked. video_url is next: it is an
-// ordinary MP4 on cdn1.suno.ai whose audio track is the full song, and it is
-// what a signed-out visitor can actually fetch. media_urls comes last despite
-// being audio-only and a third of the size — measured on a public song, its
-// "m4a-opus" entry downloads with a 200 and the right Content-Length but has no
-// moov atom and ffprobe rejects it, so it cannot be transcoded.
-func (c clip) mediaURL() string {
+// ordinary MP4 on cdn1.suno.ai whose audio track is the full song, and Suno only
+// generates it for a public song. media_urls comes last and is probed rather
+// than trusted — see looksLikeMedia.
+func (c clip) mediaURL(ctx context.Context) string {
 	if u := usableMedia(c.AudioURL); u != "" {
 		return u
 	}
@@ -166,11 +166,83 @@ func (c clip) mediaURL() string {
 		return u
 	}
 	for _, m := range c.MediaURLs {
-		if u := usableMedia(m.URL); u != "" {
+		if u := usableMedia(m.URL); u != "" && looksLikeMedia(ctx, u) {
 			return u
 		}
 	}
 	return ""
+}
+
+// unavailableErr explains why nothing was downloadable.
+//
+// Careful with the wording: is_public=false does NOT mean the page is
+// unreachable. A song in that state still opens for anyone holding the link and
+// still plays, because the player streams media_urls — so telling the user the
+// song is "private" contradicts what they can see with their own browser. What
+// is actually missing is a plain file: Suno populates video_url only for a
+// public song, and everything else it offers is the encrypted player stream.
+// Both variants end in the same way out, so it is written once — lowercase, to
+// read naturally after either lead-in.
+const manualFallback = "bấm Download trên Suno rồi chọn “…hoặc chọn file audio có sẵn” trong app"
+
+func (c clip) unavailableErr() error {
+	// A pointer, so an absent field is not read as "not public".
+	if c.IsPublic != nil && !*c.IsPublic {
+		return errors.New("Bài chưa ở chế độ Public nên Suno không sinh file tải được. " +
+			"Chuyển sang Public rồi thử lại, hoặc " + manualFallback)
+	}
+	return errors.New("Suno chỉ phát bài này qua trình phát, không có file tải được — " +
+		manualFallback)
+}
+
+// looksLikeMedia reports whether a URL actually serves a media container.
+//
+// Suno's media_urls entries are its player's encrypted stream, not a file: they
+// answer 200 with Content-Type audio/mp4 and an honest Content-Length, but the
+// bytes are not a container — measured on two songs, one public and one private,
+// the payload starts with random data and ffprobe reports "moov atom not found".
+// Handed to yt-dlp, that downloads several megabytes and then dies in
+// post-processing with "unable to obtain file audio codec", which tells the user
+// nothing. One ranged request for the first bytes settles it up front.
+//
+// Probed rather than dropped outright: if Suno ever serves a plain file here,
+// this keeps using it.
+func looksLikeMedia(ctx context.Context, raw string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Range", "bytes=0-15")
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return false
+	}
+	head, err := io.ReadAll(io.LimitReader(resp.Body, 16))
+	if err != nil {
+		return false
+	}
+	return isContainer(head)
+}
+
+// isContainer matches the magic bytes of the containers a Suno media URL could
+// plausibly hold. Anything else is not something ffmpeg can open.
+func isContainer(b []byte) bool {
+	// ISO base media (mp4/m4a): a "ftyp" box, whose type sits after the size.
+	if len(b) >= 8 && string(b[4:8]) == "ftyp" {
+		return true
+	}
+	for _, magic := range []string{"ID3", "OggS", "RIFF", "fLaC"} {
+		if strings.HasPrefix(string(b), magic) {
+			return true
+		}
+	}
+	// A bare MPEG audio frame: 11 sync bits.
+	return len(b) >= 2 && b[0] == 0xFF && b[1]&0xE0 == 0xE0
 }
 
 func usableMedia(raw string) string {
