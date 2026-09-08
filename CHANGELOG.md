@@ -1,3 +1,10 @@
+## [1.4.1](https://github.com/sonnam0904/demucs-studio/compare/v1.4.0...v1.4.1) (2026-09-08)
+
+
+### Bug Fixes
+
+* Improve Suno audio fetching and metadata handling ([9a08912](https://github.com/sonnam0904/demucs-studio/commit/9a0891217700397a6126f33b5aee36759cda07be))
+
 # [1.4.0](https://github.com/sonnam0904/demucs-studio/compare/v1.3.0...v1.4.0) (2026-09-04)
 
 
