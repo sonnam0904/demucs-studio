@@ -1,3 +1,10 @@
+# [1.5.0](https://github.com/sonnam0904/demucs-studio/compare/v1.4.1...v1.5.0) (2026-09-18)
+
+
+### Features
+
+* Just for fun :) ([a41cb4e](https://github.com/sonnam0904/demucs-studio/commit/a41cb4e0a2f275c89db26d83dbdbc69f7f6af890))
+
 ## [1.4.1](https://github.com/sonnam0904/demucs-studio/compare/v1.4.0...v1.4.1) (2026-09-08)
 
 
