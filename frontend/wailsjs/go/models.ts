@@ -393,6 +393,8 @@ export namespace settings {
 	    cudaTag: string;
 	    audioFormat: string;
 	    cookiesFromBrowser: string;
+	    sunoToken: string;
+	    sunoDeviceID: string;
 	    modelId: string;
 	    device: string;
 	    twoStems: boolean;
@@ -423,6 +425,8 @@ export namespace settings {
 	        this.cudaTag = source["cudaTag"];
 	        this.audioFormat = source["audioFormat"];
 	        this.cookiesFromBrowser = source["cookiesFromBrowser"];
+	        this.sunoToken = source["sunoToken"];
+	        this.sunoDeviceID = source["sunoDeviceID"];
 	        this.modelId = source["modelId"];
 	        this.device = source["device"];
 	        this.twoStems = source["twoStems"];

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"demucs-studio/internal/engine/demucs"
 	"demucs-studio/internal/engine/roformer"
 	"demucs-studio/internal/paths"
+	"demucs-studio/internal/proc"
 	"demucs-studio/internal/selfupdate"
 	"demucs-studio/internal/settings"
 	"demucs-studio/internal/suno"
@@ -503,6 +505,173 @@ func (a *App) Download(url string) (ytdl.Track, error) {
 	return track, err
 }
 
+// --- reverse ----------------------------------------------------------------
+
+// ReverseAudio writes a fully time-reversed copy of inputPath and returns the
+// new file's path. It leans on ffmpeg's areverse filter, which buffers the whole
+// stream — fine for songs, the only thing this app deals in.
+//
+// The output lands in OutputDir/reversed rather than next to the source: a
+// picked file can live in a directory the app cannot write to, whereas the
+// output dir is the one place always guaranteed writable.
+func (a *App) ReverseAudio(inputPath string) (string, error) {
+	var outPath string
+	err := a.runJob("reverse", func(ctx context.Context) error {
+		if strings.TrimSpace(inputPath) == "" {
+			return errors.New("chưa có file audio để đảo ngược")
+		}
+		if _, err := os.Stat(inputPath); err != nil {
+			return fmt.Errorf("không đọc được file audio: %w", err)
+		}
+		tool := a.resolver.FFmpeg(ctx)
+		if !tool.Found {
+			return errors.New("chưa có ffmpeg. Mở tab Phụ thuộc để cài")
+		}
+
+		set := a.settings.Get()
+		outDir := filepath.Join(set.OutputDir, "reversed")
+		if err := paths.EnsureDir(outDir); err != nil {
+			return err
+		}
+		ext := filepath.Ext(inputPath)
+		outPath = filepath.Join(outDir, safeName(baseNameNoExt(inputPath))+" (reversed)"+ext)
+
+		a.bus.Progress(bus.Progress{Phase: "reverse", Percent: -1, Label: "Đang đảo ngược audio"})
+		var stderr []string
+		runErr := proc.Run(ctx, proc.Options{
+			Bin: tool.Path,
+			// -y overwrites a previous reverse of the same track; -af areverse is
+			// the whole job. No codec flags: ffmpeg picks the default encoder for
+			// the output extension, which mirrors the source format.
+			Args: []string{"-y", "-i", inputPath, "-af", "areverse", outPath},
+			OnLine: func(stream, line string) {
+				if stream == "stderr" {
+					stderr = append(stderr, line)
+				}
+				a.bus.Log(bus.LevelDebug, line)
+			},
+		})
+		if runErr != nil {
+			if ctx.Err() != nil {
+				return runErr
+			}
+			detail := ""
+			if len(stderr) > 0 {
+				detail = ": " + stderr[len(stderr)-1]
+			}
+			return fmt.Errorf("ffmpeg lỗi khi đảo ngược audio%s", detail)
+		}
+		st, err := os.Stat(outPath)
+		if err != nil {
+			return fmt.Errorf("không tạo được file đảo ngược: %w", err)
+		}
+		a.media.Allow(outPath)
+		a.bus.Progress(bus.Progress{Phase: "reverse", Percent: 100, Label: "Đảo ngược xong", Detail: filepath.Base(outPath)})
+		a.bus.Logf(bus.LevelInfo, "Đã tạo audio đảo ngược: %s (%s)", outPath, humanBytes(st.Size()))
+		return nil
+	})
+	return outPath, err
+}
+
+// --- Suno upload ------------------------------------------------------------
+
+// sunoAuth resolves the stored Suno credentials, generating and persisting a
+// device-id on first use. Shared by every Suno action.
+func (a *App) sunoAuth() (token, deviceID string, err error) {
+	set := a.settings.Get()
+	// Tolerate a token pasted with its "Bearer " prefix still attached.
+	token = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(set.SunoToken), "Bearer "))
+	if token == "" {
+		return "", "", errors.New("chưa có token Suno — dán token vào ô rồi bấm Lưu token")
+	}
+	deviceID = set.SunoDeviceID
+	if deviceID == "" {
+		deviceID = newUUID()
+		next := set
+		next.SunoDeviceID = deviceID
+		if _, e := a.settings.Set(next); e != nil {
+			a.bus.Logf(bus.LevelWarn, "Không lưu được device-id Suno: %v", e)
+		}
+	}
+	return token, deviceID, nil
+}
+
+// UploadToSuno sends inputPath to the user's Suno account using the token stored
+// in settings, and returns the created clip id.
+func (a *App) UploadToSuno(inputPath string) (string, error) {
+	var clipID string
+	err := a.runJob("upload", func(ctx context.Context) error {
+		if strings.TrimSpace(inputPath) == "" {
+			return errors.New("chưa có file để đăng lên Suno")
+		}
+		if _, err := os.Stat(inputPath); err != nil {
+			return fmt.Errorf("không đọc được file: %w", err)
+		}
+		token, deviceID, err := a.sunoAuth()
+		if err != nil {
+			return err
+		}
+		id, err := suno.Upload(ctx, suno.UploadOptions{
+			FilePath: inputPath,
+			Token:    token,
+			DeviceID: deviceID,
+		}, a.reporter())
+		if err != nil {
+			return err
+		}
+		clipID = id
+		a.bus.Logf(bus.LevelInfo, "Đã đăng lên Suno (clip %s): %s", id, filepath.Base(inputPath))
+		return nil
+	})
+	return clipID, err
+}
+
+// UploadAndReverseOnSuno performs the two-step flow the reverse block's button
+// triggers: upload inputPath to Suno, then run Suno's own Studio reverse on the
+// resulting clip. Returns the suno.com page URL of the rendered clip.
+//
+// Note it reverses whatever it is given: the reverse block feeds it an
+// already-reversed file, so the Studio render reverses it a second time. That is
+// the flow requested. keepWarp reuses the captured warp markers, so the Studio
+// step only tracks tempo correctly for audio close to the template's.
+func (a *App) UploadAndReverseOnSuno(inputPath string) (string, error) {
+	var pageURL string
+	err := a.runJob("upload", func(ctx context.Context) error {
+		if strings.TrimSpace(inputPath) == "" {
+			return errors.New("chưa có file để đăng lên Suno")
+		}
+		if _, err := os.Stat(inputPath); err != nil {
+			return fmt.Errorf("không đọc được file: %w", err)
+		}
+		token, deviceID, err := a.sunoAuth()
+		if err != nil {
+			return err
+		}
+		auth := suno.StudioAuth{Token: token, DeviceID: deviceID}
+
+		// Step 1: upload the local file → clip id.
+		clipID, err := suno.Upload(ctx, suno.UploadOptions{
+			FilePath: inputPath,
+			Token:    token,
+			DeviceID: deviceID,
+		}, a.reporter())
+		if err != nil {
+			return err
+		}
+		a.bus.Logf(bus.LevelInfo, "Upload xong (clip %s) — bắt đầu reverse trên Suno", clipID)
+
+		// Step 2: Suno Studio reverse on that clip.
+		rendered, err := suno.ReverseClip(ctx, nil, clipID, "", 0, true, auth)
+		if err != nil {
+			return err
+		}
+		pageURL = rendered.PageURL()
+		a.bus.Logf(bus.LevelInfo, "Đã tạo clip reversed trên Suno: %s", pageURL)
+		return nil
+	})
+	return pageURL, err
+}
+
 // --- separation -------------------------------------------------------------
 
 func (a *App) EnsureModel(modelID string) error {
@@ -806,6 +975,18 @@ func safeName(s string) string {
 		s = "track"
 	}
 	return s
+}
+
+// newUUID returns a random v4 UUID, used for the Suno device-id header. crypto's
+// generator failing is not a condition this app can recover from, so it panics.
+func newUUID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func baseNameNoExt(p string) string {

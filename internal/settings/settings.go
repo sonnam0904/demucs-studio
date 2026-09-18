@@ -34,6 +34,13 @@ type Settings struct {
 	AudioFormat        string `json:"audioFormat"`        // wav | flac | mp3
 	CookiesFromBrowser string `json:"cookiesFromBrowser"` // "", chrome, firefox, edge, ...
 
+	// Suno upload. SunoToken is the Bearer JWT the user pastes from a logged-in
+	// suno.com session; it is short-lived, so the UI lets them replace it when it
+	// expires. SunoDeviceID is a stable per-install UUID sent as the device-id
+	// header — generated once and kept.
+	SunoToken    string `json:"sunoToken"`
+	SunoDeviceID string `json:"sunoDeviceID"`
+
 	// Separation options.
 	ModelID    string  `json:"modelId"`
 	Device     string  `json:"device"` // auto | cuda | cpu

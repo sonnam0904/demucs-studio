@@ -13,6 +13,8 @@ export interface Settings {
   cudaTag: string;
   audioFormat: string;
   cookiesFromBrowser: string;
+  sunoToken: string;
+  sunoDeviceID: string;
   modelId: string;
   device: string;
   twoStems: boolean;

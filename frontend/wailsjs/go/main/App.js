@@ -86,6 +86,10 @@ export function RevealPath(arg1) {
   return window['go']['main']['App']['RevealPath'](arg1);
 }
 
+export function ReverseAudio(arg1) {
+  return window['go']['main']['App']['ReverseAudio'](arg1);
+}
+
 export function SaveSettings(arg1) {
   return window['go']['main']['App']['SaveSettings'](arg1);
 }
@@ -100,4 +104,12 @@ export function SuggestedAccel() {
 
 export function UpdateYtDlp() {
   return window['go']['main']['App']['UpdateYtDlp']();
+}
+
+export function UploadAndReverseOnSuno(arg1) {
+  return window['go']['main']['App']['UploadAndReverseOnSuno'](arg1);
+}
+
+export function UploadToSuno(arg1) {
+  return window['go']['main']['App']['UploadToSuno'](arg1);
 }

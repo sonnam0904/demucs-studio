@@ -49,6 +49,8 @@ export function RefreshRoformerModels():Promise<number>;
 
 export function RevealPath(arg1:string):Promise<void>;
 
+export function ReverseAudio(arg1:string):Promise<string>;
+
 export function SaveSettings(arg1:settings.Settings):Promise<settings.Settings>;
 
 export function Separate(arg1:string,arg2:string):Promise<engine.Result>;
@@ -56,3 +58,7 @@ export function Separate(arg1:string,arg2:string):Promise<engine.Result>;
 export function SuggestedAccel():Promise<string>;
 
 export function UpdateYtDlp():Promise<void>;
+
+export function UploadAndReverseOnSuno(arg1:string):Promise<string>;
+
+export function UploadToSuno(arg1:string):Promise<string>;

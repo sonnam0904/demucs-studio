@@ -191,6 +191,26 @@
             </div>
           </div>
 
+          <div class="card hidden" id="reverse-card">
+            <h2 class="card-title" data-step="Đảo ngược audio"></h2>
+            <p class="hint">
+              Tạo một file audio mới với toàn bộ âm thanh bị đảo ngược (phát từ
+              cuối về đầu).
+            </p>
+            <div class="row-actions">
+              <button class="btn btn-primary" id="btn-reverse">Đảo ngược audio</button>
+            </div>
+            <div class="reverse-result hidden" id="reverse-result">
+              <div class="track-sub" id="reverse-name"></div>
+              <audio id="reverse-audio" controls preload="none"></audio>
+              <div class="row-actions">
+                <button class="link" id="btn-open-reverse">Mở file</button>
+                <button class="link" id="btn-reveal-reverse">Mở thư mục</button>
+                <button class="link" id="btn-upload-reverse">Đăng lên Suno</button>
+              </div>
+            </div>
+          </div>
+
           <div class="card" id="separate-card">
             <h2 class="card-title" data-step="Tách vocal"></h2>
             <div class="sep-grid">
@@ -230,6 +250,36 @@
             <div id="stem-list" class="stem-list"></div>
             <div class="row-actions">
               <button class="link" id="btn-open-stems">Mở thư mục kết quả</button>
+            </div>
+          </div>
+
+          <div class="card" id="suno-card">
+            <h2 class="card-title" data-step="Đăng lên Suno"></h2>
+            <p class="hint">
+              Dán token đăng nhập Suno để đăng file lên tài khoản của bạn. Token
+              được lưu tại máy; khi hết hạn chỉ cần dán token mới rồi bấm Lưu.
+              Lấy token ở suno.com → DevTools (F12) → Network → một request tới
+              <code>studio-api-prod.suno.com</code> → header <code>Authorization</code>.
+            </p>
+            <label class="field">
+              Token Suno
+              <div class="url-row">
+                <input
+                  id="suno-token"
+                  type="password"
+                  spellcheck="false"
+                  autocomplete="off"
+                  placeholder="Bearer eyJ…"
+                />
+                <button class="btn" id="btn-toggle-suno-token" type="button">Hiện</button>
+                <button class="btn" id="btn-save-suno-token">Lưu token</button>
+              </div>
+            </label>
+            <div class="row-actions">
+              <button class="btn btn-primary" id="btn-upload-suno" disabled>
+                Đăng file nguồn lên Suno
+              </button>
+              <span class="muted" id="suno-status"></span>
             </div>
           </div>
         </section>

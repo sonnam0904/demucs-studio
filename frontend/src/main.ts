@@ -460,6 +460,8 @@ function setBusy(busy: boolean) {
     "btn-info",
     "btn-download",
     "btn-pick-file",
+    "btn-reverse",
+    "btn-save-suno-token",
     "btn-install-engines",
     "btn-update-ytdlp",
     "btn-refresh-roformer",
@@ -472,6 +474,7 @@ function setBusy(busy: boolean) {
     .querySelectorAll<HTMLButtonElement>("[data-model-action]")
     .forEach((b) => (b.disabled = busy));
   refreshSeparateButton();
+  refreshSunoUpload();
 }
 
 // -------------------------------------------------------------------- deps
@@ -771,14 +774,20 @@ async function reloadModels() {
 function renderTrack(path: string, track: Track | null) {
   state.inputPath = path;
   state.track = track;
+  // A new source invalidates any reverse made from the old one.
+  resetReverse();
   const card = $("track-card");
+  const reverseCard = $("reverse-card");
   if (!path) {
     card.classList.add("hidden");
+    reverseCard.classList.add("hidden");
     renumberSteps();
     refreshSeparateButton();
+    refreshSunoUpload();
     return;
   }
   card.classList.remove("hidden");
+  reverseCard.classList.remove("hidden");
   renumberSteps();
 
   const info = track?.info;
@@ -807,6 +816,7 @@ function renderTrack(path: string, track: Track | null) {
     $<HTMLAudioElement>("track-audio").src = url;
   });
   refreshSeparateButton();
+  refreshSunoUpload();
 }
 
 function refreshSeparateButton() {
@@ -819,6 +829,135 @@ function refreshSeparateButton() {
     return;
   }
   btn.textContent = model && !model.installed ? "Tải model & tách vocal" : "Tách vocal";
+}
+
+// The last reversed file, kept module-level so the open/reveal buttons have a
+// target after the async job returns.
+let reversePath = "";
+
+// resetReverse clears any previous reverse result — called whenever the source
+// track changes so a stale player and stale open buttons cannot linger.
+function resetReverse() {
+  reversePath = "";
+  $("reverse-result").classList.add("hidden");
+  const audio = $<HTMLAudioElement>("reverse-audio");
+  audio.pause();
+  audio.removeAttribute("src");
+  audio.load();
+}
+
+function renderReverse(path: string) {
+  reversePath = path;
+  $("reverse-result").classList.remove("hidden");
+  $("reverse-name").textContent = path.split(/[\\/]/).pop() || path;
+  void api.MediaURL(path).then((url: string) => {
+    $<HTMLAudioElement>("reverse-audio").src = url;
+  });
+  $("reverse-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+// ------------------------------------------------------------------- suno
+
+// sunoTokenExp pulls the `exp` (unix seconds) out of a JWT so the UI can show
+// how long the pasted token is still good for. Returns null when the token is
+// absent or not a decodable JWT — the caller then just says "đã lưu".
+function sunoTokenExp(token: string): number | null {
+  const t = token.trim().replace(/^Bearer\s+/i, "");
+  const parts = t.split(".");
+  if (parts.length < 2) return null;
+  try {
+    let b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    const payload = JSON.parse(atob(b64));
+    return typeof payload.exp === "number" ? payload.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+// renderSunoStatus reflects the stored token's validity next to the upload
+// button, and keeps the button's enabled state in sync.
+function renderSunoStatus() {
+  const token = (state.settings?.sunoToken ?? "").trim();
+  const status = $("suno-status");
+  if (!token) {
+    status.textContent = "Chưa có token";
+  } else {
+    const exp = sunoTokenExp(token);
+    if (exp === null) {
+      status.textContent = "Đã lưu token";
+    } else {
+      const remainingMs = exp * 1000 - Date.now();
+      if (remainingMs <= 0) {
+        status.textContent = "⚠ Token đã hết hạn — dán token mới rồi bấm Lưu";
+      } else {
+        const mins = Math.round(remainingMs / 60000);
+        const d = new Date(exp * 1000);
+        const hh = String(d.getHours()).padStart(2, "0");
+        const mm = String(d.getMinutes()).padStart(2, "0");
+        status.textContent = `Token còn hạn ~${mins} phút (tới ${hh}:${mm})`;
+      }
+    }
+  }
+  refreshSunoUpload();
+}
+
+// refreshSunoUpload enables the source-file upload button only when there is
+// both a file to send and a token to send it with.
+function refreshSunoUpload() {
+  const hasToken = Boolean((state.settings?.sunoToken ?? "").trim());
+  const btn = $<HTMLButtonElement>("btn-upload-suno");
+  btn.disabled = state.busy || !state.inputPath || !hasToken;
+  btn.title = !hasToken
+    ? "Chưa có token Suno"
+    : !state.inputPath
+      ? "Chưa có file nguồn"
+      : "";
+}
+
+// hasSunoToken guards the Suno actions.
+function hasSunoToken(): boolean {
+  return Boolean((state.settings?.sunoToken ?? "").trim());
+}
+
+// onSunoError surfaces the error and nudges toward a fresh token on 401.
+function onSunoError(e: unknown) {
+  const msg = errText(e);
+  toast(msg, "error");
+  if (/401|unauthorized/i.test(msg)) {
+    renderSunoStatus();
+    toast("Có thể token đã hết hạn — dán token mới rồi thử lại.", "error");
+  }
+}
+
+// uploadToSuno uploads one local file to Suno (source-file button).
+async function uploadToSuno(path: string) {
+  if (!path) return toast("Chưa có file để đăng lên Suno.", "error");
+  if (!hasSunoToken()) {
+    return toast("Chưa có token Suno — dán token vào ô rồi bấm Lưu token.", "error");
+  }
+  try {
+    await api.UploadToSuno(path);
+    toast("Đã đăng lên Suno. Mở Library trên suno.com để xem.", "good");
+  } catch (e) {
+    onSunoError(e);
+  }
+}
+
+// uploadAndReverseOnSuno runs the two-step reverse-block flow: upload the file,
+// then let Suno's Studio reverse the resulting clip.
+async function uploadAndReverseOnSuno(path: string) {
+  if (!path) return toast("Chưa có file để đăng lên Suno.", "error");
+  if (!hasSunoToken()) {
+    return toast("Chưa có token Suno — dán token vào ô rồi bấm Lưu token.", "error");
+  }
+  try {
+    const url = (await api.UploadAndReverseOnSuno(path)) as string;
+    toast("Đã upload và tạo bản reverse trên Suno.", "good");
+    if (url) BrowserOpenURL(url);
+  } catch (e) {
+    onSunoError(e);
+  }
 }
 
 function renderResult(result: SeparateResult) {
@@ -889,6 +1028,8 @@ function fillSettings(s: Settings) {
   $<HTMLSelectElement>("set-stemformat").value = s.stemFormat;
   $<HTMLSelectElement>("set-mp3").value = String(s.mp3Bitrate);
   $<HTMLSelectElement>("set-cookies").value = s.cookiesFromBrowser;
+  $<HTMLInputElement>("suno-token").value = s.sunoToken ?? "";
+  renderSunoStatus();
   // Only when one was actually chosen: an empty accel means the user has never
   // picked, and boot() asks the backend to suggest one instead.
   if (s.accel) selectOrFallback("accel-select", s.accel, "reuse");
@@ -1076,6 +1217,39 @@ function wireActions() {
       toast(errText(e), "error");
     }
   };
+
+  $("btn-reverse").onclick = async () => {
+    if (!state.inputPath) return;
+    try {
+      const path = (await api.ReverseAudio(state.inputPath)) as string;
+      renderReverse(path);
+      toast("Đã tạo audio đảo ngược.", "good");
+    } catch (e) {
+      toast(errText(e), "error");
+    }
+  };
+
+  $("btn-open-reverse").onclick = () =>
+    void api.OpenPath(reversePath).catch((e) => toast(errText(e), "error"));
+  $("btn-reveal-reverse").onclick = () =>
+    void api.RevealPath(reversePath).catch((e) => toast(errText(e), "error"));
+  $("btn-upload-reverse").onclick = () => void uploadAndReverseOnSuno(reversePath);
+
+  $("btn-save-suno-token").onclick = async () => {
+    const token = $<HTMLInputElement>("suno-token").value.trim();
+    await persistSettings({ sunoToken: token });
+    renderSunoStatus();
+    toast(token ? "Đã lưu token Suno." : "Đã xoá token Suno.", "good");
+  };
+
+  $("btn-toggle-suno-token").onclick = () => {
+    const input = $<HTMLInputElement>("suno-token");
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    $("btn-toggle-suno-token").textContent = show ? "Ẩn" : "Hiện";
+  };
+
+  $("btn-upload-suno").onclick = () => void uploadToSuno(state.inputPath);
 
   $("btn-cancel").onclick = () => void api.Cancel();
 
